@@ -125,7 +125,7 @@ with open("sample_candidates.json", "r") as file:
     # print(candidates[0])
 
 
-
+# Run using: python -m pipeline.candidate_parser
 
 # ------- Test Start--------
 count = 0
