@@ -10,6 +10,7 @@ from .schemas import (
 )
 import config
 from indexing.honeypot_registry import HoneypotFilter 
+import time
 
 def parse_candidate(item):
 
@@ -129,6 +130,9 @@ with open("sample_candidates.json", "r") as file:
 # Run using: python -m pipeline.candidate_parser
 
 # ------- Test Start--------
+# always keep track of time because it will help improve
+time1 = time.perf_counter()
+
 count = 0
 
 for c in candidates:
@@ -149,4 +153,8 @@ for c in candidates:
 
 print(count) # count = 22 out of 50 i.e 22 honeypot candidates detected
 
+
+
+time2 = time.perf_counter()
+print(time2 - time1)
 # ------- Test End--------
