@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import pickle
 import logging
 from datetime import date
 from pathlib import Path
@@ -17,16 +16,18 @@ logger = logging.getLogger(__name__)
 
 FEATURE_DIM = 30
 
+# Work mode encoding — built once at module level
+_WORK_MODE_MAP = {"onsite": 0.0, "hybrid": 0.5, "remote": 1.0}
+
+
 class FeatureStore:
     """
     Pre-scores every candidate into a fixed 30-dim float32 vector.
 
     Usage:
-        # Build once (during precompute)
         fs = FeatureStore()
         matrix = fs.build(candidates, save=True)   # → [N × 30]
 
-        # Load at ranking time
         fs = FeatureStore()
         fs.load()
         vec = fs.get(candidate_id)                 # → np.ndarray [30]
@@ -89,7 +90,7 @@ class FeatureStore:
             matrix.shape,
             float(matrix.min()),
             float(matrix.max()),
-            int(matrix[:, 2].sum()),   # feature 2 = open_to_work_flag
+            int(matrix[:, 2].sum()),
         )
         return matrix
 
@@ -97,8 +98,7 @@ class FeatureStore:
         """Load pre-built matrix and id map from disk."""
         if not self.feature_path.exists():
             raise FileNotFoundError(
-                f"Feature store not found at '{self.feature_path}'. "
-                "Run .build() first."
+                f"Feature store not found at '{self.feature_path}'. Run .build() first."
             )
         self._matrix = np.load(str(self.feature_path))
         ids: list[str] = np.load(str(self.ids_path), allow_pickle=True).tolist()
@@ -115,7 +115,12 @@ class FeatureStore:
 
     def get_batch(self, candidate_ids: list[str]) -> np.ndarray:
         """Return [K × 30] matrix for an ordered list of candidate_ids."""
-        return np.stack([self.get(cid) for cid in candidate_ids])
+        self._require_loaded()
+        # Single dict lookup per id + one numpy fancy-index — avoids K individual get() calls
+        # each of which re-ran _require_loaded() and a redundant is_loaded check
+        id_to_idx = self._id_to_idx
+        indices = [id_to_idx[cid] for cid in candidate_ids]
+        return self._matrix[indices]
 
     @property
     def is_loaded(self) -> bool:
@@ -124,96 +129,62 @@ class FeatureStore:
     # ── Core vector builder ───────────────────────────────────────────────────
 
     @staticmethod
-    def _to_vector(c: CandidateFeatureVector, today: date, trajectory_analyzer : TrajectoryAnalyzer) -> np.ndarray:
+    def _to_vector(c: CandidateFeatureVector, today: date, trajectory_analyzer: TrajectoryAnalyzer) -> np.ndarray:
         """
         Map one CandidateFeatureVector → float32 ndarray of shape [30].
         Every dimension is independently clipped to [0, 1].
-
-        Feature index reference:
-          [0]  recency score          (behavioral sub-score)
-          [1]  response_rate          (behavioral sub-score)
-          [2]  open_to_work_flag      (behavioral sub-score)
-          [3]  notice_period score    (behavioral sub-score)
-          [4]  github_activity_score  (behavioral sub-score)
-          [5]  profile_completeness   (behavioral sub-score)
-          [6]  interview_completion   (behavioral sub-score)
-          [7]  offer_acceptance_rate
-          [8]  profile_views_30d      (normalised)
-          [9]  applications_30d       (normalised)
-          [10] search_appearances_30d (normalised)
-          [11] saved_by_recruiters_30d(normalised)
-          [12] connection_count       (normalised)
-          [13] endorsements_received  (normalised)
-          [14] verified_email
-          [15] verified_phone
-          [16] linkedin_connected
-          [17] willing_to_relocate
-          [18] notice_period_raw      (lower = better, so inverted)
-          [19] preferred_work_mode    (onsite=0 hybrid=0.5 remote=1)
-          [20] salary_min_normalised
-          [21] salary_max_normalised
-          [22] avg_response_time      (inverted: faster = higher)
-          [23] yoe_score              (from TrajectoryAnalyzer)
-          [24] product_experience     (from TrajectoryAnalyzer)
-          [25] stability_score        (avg_tenure / 3.0)
-          [26] job_hopper             (inverted: 0 = stable)
-          [27] avg_skill_assessment   (mean of non-(-1) scores, else 0.5)
-          [28] is_honeypot            (0 or 1 — flag, not penalty)
-          [29] is_consulting_only     (0 or 1 — flag, not penalty)
         """
         s = c.signals
         traj = trajectory_analyzer.build_feature_vector(c)
 
-        # ── [0] Recency: exponential decay on days since last active ─────────
+        # [0] Recency: exponential decay on days since last active
         days_inactive = (today - s.last_active_date).days
         recency = math.exp(-config.RECENCY_LAMBDA * max(days_inactive, 0))
 
-        # ── [1] Recruiter response rate ──────────────────────────────────────
+        # [1] Recruiter response rate
         response_rate = float(s.recruiter_response_rate)
 
-        # ── [2] Open to work ─────────────────────────────────────────────────
+        # [2] Open to work
         open_to_work = float(s.open_to_work_flag)
 
-        # ── [3] Notice period score (config thresholds) ──────────────────────
+        # [3] Notice period score (tiered linear decay via config thresholds)
         nd = s.notice_period_days
         if nd <= config.NOTICE_PERIOD_IDEAL_MAX:
             notice_score = 1.0
         elif nd <= config.NOTICE_PERIOD_ACCEPTABLE_MAX:
-            # linear decay from 1.0 → 0.5
             notice_score = 1.0 - 0.5 * (
                 (nd - config.NOTICE_PERIOD_IDEAL_MAX)
                 / (config.NOTICE_PERIOD_ACCEPTABLE_MAX - config.NOTICE_PERIOD_IDEAL_MAX)
             )
         elif nd <= config.NOTICE_PERIOD_MAX:
-            # linear decay from 0.5 → 0.2
             notice_score = 0.5 - 0.3 * (
                 (nd - config.NOTICE_PERIOD_ACCEPTABLE_MAX)
                 / (config.NOTICE_PERIOD_MAX - config.NOTICE_PERIOD_ACCEPTABLE_MAX)
             )
         else:
-            notice_score = 0.1   # > 90 days
+            notice_score = 0.1
 
-        # ── [4] GitHub activity (−1 when not linked → neutral) ───────────────
+        # [4] GitHub activity (−1 when not linked → neutral default)
         github = (
             config.GITHUB_NOT_LINKED_DEFAULT
             if s.github_activity_score < 0
             else float(s.github_activity_score) / 100.0
         )
 
-        # ── [5] Profile completeness (already [0,1] from schema) ─────────────
+        # [5] Profile completeness
         completeness = float(s.profile_completeness_score) / 100.0
 
-        # ── [6] Interview completion rate ─────────────────────────────────────
+        # [6] Interview completion rate
         interview = float(s.interview_completion_rate)
 
-        # ── [7] Offer acceptance rate (−1 = no history → neutral) ────────────
+        # [7] Offer acceptance rate (−1 = no history → neutral)
         offer = (
             config.OFFER_ACCEPTANCE_NO_HISTORY_DEFAULT
             if s.offer_acceptance_rate < 0
             else float(s.offer_acceptance_rate)
         )
 
-        # ── [8–13] Platform engagement signals (log-scaled or capped) ────────
+        # [8–13] Platform engagement signals
         views_30d    = min(s.profile_views_received_30d / 100.0, 1.0)
         apps_30d     = min(s.applications_submitted_30d / 20.0, 1.0)
         search_30d   = min(s.search_appearance_30d / 200.0, 1.0)
@@ -221,49 +192,44 @@ class FeatureStore:
         connections  = min(s.connection_count / 500.0, 1.0)
         endorsements = min(s.endorsements_received / config.ENDORSEMENT_BOOST_CAP, 1.0)
 
-        # ── [14–16] Verification signals ──────────────────────────────────────
-        verified_email  = float(s.verified_email)
-        verified_phone  = float(s.verified_phone)
-        linkedin        = float(s.linkedin_connected)
+        # [14–16] Verification signals
+        verified_email = float(s.verified_email)
+        verified_phone = float(s.verified_phone)
+        linkedin       = float(s.linkedin_connected)
 
-        # ── [17] Willing to relocate ──────────────────────────────────────────
+        # [17] Willing to relocate
         relocate = float(s.willing_to_relocate)
 
-        # ── [18] Notice period raw (inverted: lower days = higher score) ──────
+        # [18] Notice period raw (inverted: lower days = higher score)
         notice_raw = 1.0 - min(s.notice_period_days / 90.0, 1.0)
 
-        # ── [19] Preferred work mode ──────────────────────────────────────────
-        work_mode = {"onsite": 0.0, "hybrid": 0.5, "remote": 1.0}.get(
-            s.preferred_work_mode, 0.5
-        )
+        # [19] Preferred work mode
+        work_mode = _WORK_MODE_MAP.get(s.preferred_work_mode, 0.5)
 
-        # ── [20–21] Salary range (normalised to 80 LPA ceiling) ──────────────
+        # [20–21] Salary range (normalised to 80 LPA ceiling)
         salary_min = min(s.expected_salary_min_lpa / 80.0, 1.0)
         salary_max = min(s.expected_salary_max_lpa / 80.0, 1.0)
 
-        # ── [22] Avg response time (inverted: faster = better; cap 72h) ──────
+        # [22] Avg response time (inverted: faster = better; cap 72h)
         response_time = 1.0 - min(s.avg_response_time_hours / 72.0, 1.0)
 
-        # ── [23–26] Career quality from TrajectoryAnalyzer ───────────────────
+        # [23–26] Career quality from TrajectoryAnalyzer
         yoe_score          = float(traj["yoe_score"])
         product_experience = float(traj["product_experience"])
         stability_score    = min(float(traj["avg_tenure"]) / 3.0, 1.0)
-        # job_hopper is already [0,1] where 1=hopper; invert so 1=stable
         job_hopper_stable  = 1.0 - float(traj["job_hopper"])
 
-        # ── [27] Skill assessment: mean of all non-(-1) scores ────────────────
-        valid_scores = [
-            v for v in s.skill_assessment_scores.values() if v >= 0
-        ]
+        # [27] Skill assessment: mean of all non-(-1) scores
+        valid_scores = [v for v in s.skill_assessment_scores.values() if v >= 0]
         skill_assessment = (
             (sum(valid_scores) / len(valid_scores)) / 100.0
             if valid_scores
-            else 0.5   # no assessments taken → neutral
+            else 0.5
         )
 
-        # ── [28–29] Flag dimensions ───────────────────────────────────────────
-        is_honeypot       = float(getattr(c, "is_honeypot", False))
-        is_consulting     = float(c.is_consulting_only)
+        # [28–29] Flag dimensions
+        is_honeypot   = float(getattr(c, "is_honeypot", False))
+        is_consulting = float(c.is_consulting_only)
 
         features = [
             recency,            # 0
@@ -322,9 +288,5 @@ class FeatureStore:
             )
 
     def __repr__(self) -> str:
-        status = (
-            f"shape={self._matrix.shape}"
-            if self.is_loaded
-            else "not loaded"
-        )
+        status = f"shape={self._matrix.shape}" if self.is_loaded else "not loaded"
         return f"FeatureStore({status})"

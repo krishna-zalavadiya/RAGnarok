@@ -8,6 +8,9 @@ from pathlib import Path
 from indexing.faiss_builder import FaissIndex
 from indexing.bm25_builder import BM25Index
 from indexing.feature_store import FeatureStore
+from scoring.behavioral import BehavioralScorer
+from scoring.trajectory import TrajectoryVelocityScorer
+from scoring.honeypot_filter import HoneypotCleanup
 
 
 DATASET_PATH = Path("sample_candidates.json")
@@ -22,6 +25,9 @@ print("Candidates loaded successfully")
 honeypot_filter = HoneypotFilter()
 honeypot_filter.run_honeypot_filters(candidates)
 print("Honeypot run successfully")
+
+honeypot_cleanup = HoneypotCleanup()
+candidates = honeypot_cleanup.cleanup_candidates(candidates)
 
 trajectory_analyzer = TrajectoryAnalyzer()
 trajectory_analyzer.build_all_feature_vector(candidates)
@@ -42,6 +48,37 @@ print("BM25 index built successfully")
 fs = FeatureStore()
 matrix = fs.build(candidates, save=True)
 print("Feature store run successfully")
+
+bscorer = BehavioralScorer()
+beh_results = bscorer.score_all(candidates)
+sorted_beh_results = sorted(
+    beh_results.values(), 
+    key=lambda x: x.behavioral_score, 
+    reverse=True
+)
+print("--- TOP 10 BEHAVIORAL CANDIDATES ---")
+for rank, result in enumerate(sorted_beh_results[:10], start=1):
+    print(f"{rank}. ID: {result.candidate_id} | Score: {result.behavioral_score:.4f}")
+print("Behavioual Score run successfully")
+
+tscorer = TrajectoryVelocityScorer()
+traj_results = tscorer.score_all(candidates)
+sorted_trajectory = sorted(
+    traj_results, 
+    key=lambda x: x.trajectory_velocity, 
+    reverse=True
+)
+
+print("--- TOP 10 CAREER TRAJECTORY VELOCITY CANDIDATES ---")
+for rank, res in enumerate(sorted_trajectory[:5], start=1):
+    print(
+        f"{rank}. ID: {res.candidate_id} | "
+        f"Velocity Score: {res.trajectory_velocity:.4f} | "
+        f"Percentile: {res.percentile_rank:.1f}% | "
+        f"Promotions: {res.num_promotions} over {res.years_of_experience:.1f} YOE "
+        f"({res.promotions_per_year:.2f}/yr)"
+    )
+print("Trajectory Score run successfully")
 
 time2 = time.perf_counter()
 print(time2 - time1)
