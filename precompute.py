@@ -11,6 +11,7 @@ from indexing.feature_store import FeatureStore
 from scoring.behavioral import BehavioralScorer
 from scoring.trajectory import TrajectoryVelocityScorer
 from scoring.honeypot_filter import HoneypotCleanup
+from scoring.career_quality import CareerQualityScorer
 
 
 DATASET_PATH = Path("sample_candidates.json")
@@ -79,6 +80,22 @@ for rank, res in enumerate(sorted_trajectory[:5], start=1):
         f"({res.promotions_per_year:.2f}/yr)"
     )
 print("Trajectory Score run successfully")
+
+career_quality_scorer = CareerQualityScorer(intent)
+ 
+results = career_quality_scorer.score_all(candidates)
+
+for r in results.values():
+    print(
+        f"  {r.candidate_id:<20} "
+        f"final={r.career_quality_score:.4f}  "
+        f"product_co={r.product_co_score:.3f}  "
+        f"yoe={r.yoe_score:.3f}  "
+        f"stability={r.stability_score:.3f}  "
+        f"domain={r.domain_match_score:.3f}  "
+        f"consulting={r.is_consulting_only}"
+    )
+
 
 time2 = time.perf_counter()
 print(time2 - time1)
