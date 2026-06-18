@@ -30,6 +30,7 @@ ENV/
 data/indexes/*.index
 data/indexes/*.pkl
 data/indexes/*.npy
+data/candidates.jsonl
 !data/.gitkeep
 
 # IDEs
