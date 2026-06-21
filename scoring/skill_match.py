@@ -199,7 +199,10 @@ _ASSESSMENT_WEIGHT: float    = config.ASSESSMENT_SCORE_WEIGHT
 
 _DISQUALIFIER_HARD_PENALTY: float = getattr(config, "DISQUALIFIER_HARD_PENALTY", 0.25)
 _DISQUALIFIER_SOFT_PENALTY: float = getattr(config, "DISQUALIFIER_SOFT_PENALTY", 0.70)
-_DISQUALIFIER_HARD_PROFICIENCY: frozenset[str] = frozenset(("expert", "advanced", "intermediate"))
+# Hard disq only fires for expert/advanced: intermediate is incidental exposure,
+# not a primary domain indicator. Previously included "intermediate" which was
+# too aggressive (zeroed candidates with only a passing familiarity with CV/speech).
+_DISQUALIFIER_HARD_PROFICIENCY: frozenset[str] = frozenset(("expert", "advanced"))
 
 # Normalised final-score weights (keep ratio 2:1 from config, but normalise to [0,1])
 _REQ_W: float  = config.REQUIRED_SKILL_WEIGHT / (

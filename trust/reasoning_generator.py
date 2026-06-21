@@ -109,7 +109,7 @@ _TIER_MID: int = 60      # ranks 31–60
 
 # Output length constraints.
 _MIN_CHARS: int = 60
-_MAX_CHARS: int = 280
+_MAX_CHARS: int = 320
 _SENTENCE2_FALLBACK_MAX: int = 120   # max chars for Sentence 2 if Sentence 1 is long
 
 # Confidence display rounding.
@@ -156,7 +156,7 @@ def _rank_tier(rank: int) -> str:
 # SIGNAL VALUE EXTRACTION HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _extract_first_fact(signal_value: str, max_len: int = 80) -> str:
+def _extract_first_fact(signal_value: str, max_len: int = 120) -> str:
     """
     Extract the first concrete fact from a signal value string.
 
@@ -166,7 +166,7 @@ def _extract_first_fact(signal_value: str, max_len: int = 80) -> str:
       "3 product company role(s): Swiggy, Zepto, Razorpay"
 
     We take everything up to the first ' — ' separator or the full string,
-    then truncate to max_len to keep reasoning sentences short.
+    then truncate smartly at skill-list boundaries to avoid mid-word cuts.
     """
     # Split on em-dash separator used in signal values.
     parts = signal_value.split(" — ")
@@ -174,12 +174,18 @@ def _extract_first_fact(signal_value: str, max_len: int = 80) -> str:
 
     # Also split on " (recency" / " (below" etc. — keep the leading fact only.
     paren_idx = fact.find(" (")
-    if paren_idx > 20:   # keep the paren if it's short and part of the core fact
+    if paren_idx > 30:   # keep the paren if it's short and part of the core fact
         fact = fact[:paren_idx].strip()
 
-    # Truncate.
+    # Smart truncation: round to the last complete comma-separated item.
     if len(fact) > max_len:
-        fact = fact[:max_len].rstrip() + "…"
+        truncated = fact[:max_len]
+        # Try to cut at the last ", " to avoid mid-skill-name truncation.
+        last_comma = truncated.rfind(", ")
+        if last_comma > max_len // 2:  # only if we're keeping at least half
+            fact = truncated[:last_comma] + "…"
+        else:
+            fact = truncated.rstrip() + "…"
 
     return fact
 
@@ -252,10 +258,11 @@ def _sentence1_elite(
         return f"{adv_fact}; note {top_risk.lower()}"
     if adv_fact:
         return adv_fact
-    # Fallback: use composite score.
+    # Fallback: use skill score (composite_score is not on this dataclass).
+    skill_pct = f"{scores.skill_score:.0%}" if scores.skill_score > 0 else "strong"
     return (
-        f"Strong overall match with composite score "
-        f"{scores.composite_score:.0%} across skill, career, and availability signals"
+        f"Strong overall match — {skill_pct} skill coverage across "
+        f"skill, career, and availability signals"
     )
 
 
@@ -273,16 +280,25 @@ def _sentence1_strong(
     Pattern: "[Positive fact]; however, [risk if HIGH]." or just "[Positive fact]."
     """
     adv_fact = _top_advocate_fact(trust.advocate_signals)
+    # Also try second best signal for richer context
+    top2 = top_advocate_signals(trust.advocate_signals, n=2)
+    second_fact = _extract_first_fact(top2[1].value, max_len=60) if len(top2) >= 2 else None
+
     n_high_risks = _high_risk_count(trust.skeptic_signals)
     top_risk = _top_risk_summary(trust.skeptic_signals) if n_high_risks > 0 else None
 
     if adv_fact and top_risk:
         return f"{adv_fact}; however, {top_risk.lower()}"
+    if adv_fact and second_fact and second_fact != adv_fact:
+        return f"{adv_fact}; also {second_fact.lower()}"
     if adv_fact:
         return adv_fact
+    # Fallback using actual score fields (composite_score does not exist on this dataclass).
+    skill_pct = f"{scores.skill_score:.0%}"
+    career_pct = f"{scores.career_score:.0%}"
     return (
-        f"Solid profile match at {scores.composite_score:.0%} composite — "
-        f"skill and career signals are positive"
+        f"Solid profile — {skill_pct} skill coverage, "
+        f"{career_pct} career quality signal"
     )
 
 
@@ -313,13 +329,16 @@ def _sentence1_mid(
         return f"Moderate fit — primary concern: {top_risk.lower()}"
 
     if adv_fact:
+        skill_pct = f"{scores.skill_score:.0%}"
         return (
-            f"{adv_fact}, though composite score of {scores.composite_score:.0%} "
+            f"{adv_fact}, though {skill_pct} skill score "
             f"reflects gaps in other areas"
         )
 
+    skill_pct = f"{scores.skill_score:.0%}"
+    career_pct = f"{scores.career_score:.0%}"
     return (
-        f"Mid-tier match at {scores.composite_score:.0%} composite — "
+        f"Mid-tier match: {skill_pct} skill, {career_pct} career quality — "
         f"some signals missing or weak"
     )
 
@@ -336,27 +355,32 @@ def _sentence1_weak(
     A positive signal is mentioned only if HIGH confidence exists.
     Tone: honest, specific, avoids false hope.
 
-    Pattern: "Ranked lower due to [top risk][; one positive if HIGH]."
+    Pattern: "Lower-ranked due to [top risk]; strongest positive: [adv if any]."
     """
     top_risk = _top_risk_summary(trust.skeptic_signals)
     n_high_adv = _high_advocate_count(trust.advocate_signals)
+    # Show adv_fact when there ARE high advocate signals; shows the offset clearly.
     adv_fact = _top_advocate_fact(trust.advocate_signals) if n_high_adv > 0 else None
 
     if top_risk and adv_fact:
+        # Lead with risk, then show the strongest positive offset.
         return (
             f"Lower-ranked due to {top_risk.lower()}; "
             f"strongest positive: {adv_fact.lower()}"
         )
     if top_risk:
-        return f"Lower-ranked primarily due to {top_risk.lower()}"
+        # No offsetting positive — clean risk-only statement.
+        return f"Lower-ranked due to {top_risk.lower()}"
     if adv_fact:
+        skill_pct = f"{scores.skill_score:.0%}"
         return (
-            f"Limited signals overall; best indicator: {adv_fact.lower()} "
-            f"(composite {scores.composite_score:.0%})"
+            f"Limited disqualifying signals; best indicator: {adv_fact.lower()} "
+            f"({skill_pct} skill match)"
         )
+    skill_pct = f"{scores.skill_score:.0%}"
     return (
-        f"Weak overall signal match at {scores.composite_score:.0%} composite — "
-        f"profile does not align with key JD requirements"
+        f"Weak overall match: {skill_pct} skill score — "
+        f"profile does not align with key JD retrieval/ranking requirements"
     )
 
 
@@ -465,11 +489,17 @@ def _assemble(sentence1: str, sentence2: str) -> str:
         )
         if short_s2_match:
             s2 = short_s2_match.group(0)
-        else:
-            # Absolute fallback: truncate sentence 1 instead.
-            s1 = s1[: _MAX_CHARS - len(s2) - 5].rstrip() + "…"
-
-        combined = f"{s1}. {s2}."
+            combined = f"{s1}. {s2}."
+        elif len(combined) > _MAX_CHARS + 40:
+            # Still too long — truncate sentence 1 smartly at skill boundary.
+            budget = _MAX_CHARS - len(s2) - 5
+            trunc = s1[:budget]
+            last_comma = trunc.rfind(", ")
+            if last_comma > budget // 2:
+                s1 = trunc[:last_comma] + "…"
+            else:
+                s1 = trunc.rstrip() + "…"
+            combined = f"{s1}. {s2}."
 
     # Minimum length guard: if too short, it's likely a sparse profile.
     if len(combined) < _MIN_CHARS:
@@ -481,6 +511,29 @@ def _assemble(sentence1: str, sentence2: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # PUBLIC API
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _sentence1_disqualified(
+    trust: TrustVerdict,
+    candidate: CandidateFeatureVector,
+    scores: ComponentScores,
+) -> str:
+    """
+    Sentence 1 for candidates whose score was zeroed by a hard disqualifier.
+
+    States the disqualification reason clearly, plus the strongest positive
+    signal so the recruiter understands the trade-off.
+    """
+    top_risk = _top_risk_summary(trust.skeptic_signals)
+    adv_fact = _top_advocate_fact(trust.advocate_signals)
+
+    disq_prefix = "Score zeroed due to hard domain disqualifier"
+    if top_risk:
+        disq_prefix = f"Score zeroed: {top_risk.lower()}"
+
+    if adv_fact:
+        return f"{disq_prefix}; strongest relevant signal: {adv_fact.lower()}"
+    return disq_prefix
+
 
 def generate_reasoning(
     rank: int,
@@ -503,7 +556,7 @@ def generate_reasoning(
 
     Returns
     -------
-    str — 1-2 sentences, 60-280 characters.
+    str — 1-2 sentences, 60-320 characters.
           Every factual claim traces to profile data via signal.value strings.
           Safe to embed directly in submission CSV.
 
@@ -546,7 +599,16 @@ def generate_reasoning(
     # ── Build Sentence 1 (tier-dependent) ────────────────────────────────────
     tier = _rank_tier(rank)
 
-    if tier == "ELITE":
+    # Detect hard-disqualified candidates (score == 0 and disqualifier is the cause)
+    # by checking for a domain-mismatch skeptic signal with HIGH severity.
+    is_disqualified = scores.skill_score == 0.0 or any(
+        "domain" in s.label.lower() and s.severity == "HIGH"
+        for s in trust.skeptic_signals
+    )
+
+    if is_disqualified and rank > 20:
+        s1 = _sentence1_disqualified(trust, candidate, scores)
+    elif tier == "ELITE":
         s1 = _sentence1_elite(trust, candidate, scores)
     elif tier == "STRONG":
         s1 = _sentence1_strong(trust, candidate, scores)
@@ -565,11 +627,12 @@ def generate_reasoning(
     reasoning = _assemble(s1, s2)
 
     logger.debug(
-        "reasoning: %s rank=%d tier=%s verdict=%s len=%d",
+        "reasoning: %s rank=%d tier=%s verdict=%s disq=%s len=%d",
         candidate.candidate_id,
         rank,
         tier,
         trust.verdict,
+        is_disqualified if rank > 20 else "N/A",
         len(reasoning),
     )
 

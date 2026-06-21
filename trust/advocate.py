@@ -193,9 +193,9 @@ def _scan_skill_clusters(
             continue
 
         # Build human-readable skill list for the value field.
-        skill_list = ", ".join(cs.matched_skills[:4])  # cap at 4 for readability
-        if len(cs.matched_skills) > 4:
-            skill_list += f" (+{len(cs.matched_skills) - 4} more)"
+        skill_list = ", ".join(cs.matched_skills[:6])  # show up to 6 for full context
+        if len(cs.matched_skills) > 6:
+            skill_list += f" (+{len(cs.matched_skills) - 6} more)"
 
         if not skill_list:
             # Score > threshold but no named skills — ontology match only.
@@ -232,9 +232,9 @@ def _scan_required_skill_rate(
     if coverage < _MED_THRESHOLD:
         return None
 
-    matched_str = ", ".join(skill_result.matched_required[:5])
-    if len(skill_result.matched_required) > 5:
-        matched_str += f" (+{len(skill_result.matched_required) - 5} more)"
+    matched_str = ", ".join(skill_result.matched_required[:6])
+    if len(skill_result.matched_required) > 6:
+        matched_str += f" (+{len(skill_result.matched_required) - 6} more)"
 
     return AdvocateSignal(
         label="Required skill coverage",

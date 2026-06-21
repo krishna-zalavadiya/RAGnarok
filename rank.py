@@ -39,7 +39,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input", "-i",
         type=Path,
-        default=config.CANDIDATES_JSONL_GZ if config.CANDIDATES_JSONL_GZ.exists() else config.SAMPLE_CANDIDATES_JSON,
+        # Prefer full dataset in priority order:
+        # 1. candidates.jsonl.gz (compressed, production)
+        # 2. candidates.jsonl    (uncompressed, also valid)
+        # 3. sample_candidates.json (fallback, 50 samples only)
+        default=(
+            config.CANDIDATES_JSONL_GZ if config.CANDIDATES_JSONL_GZ.exists()
+            else config.CANDIDATES_JSONL if config.CANDIDATES_JSONL.exists()
+            else config.SAMPLE_CANDIDATES_JSON
+        ),
         help="Path to candidates file (.jsonl, .jsonl.gz, or .json array)",
     )
     parser.add_argument(

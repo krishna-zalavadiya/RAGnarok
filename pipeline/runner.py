@@ -166,11 +166,13 @@ class PipelineRunner:
         # ── 6. Composite scoring ──────────────────────────────────────────
         t0 = time.perf_counter()
         composite_results = []
+        # Cache behavioral_scorer so trust layer can reuse it (avoids double-scoring).
+        _behavioral_scorer_instance = None
         try:
             from scoring.behavioral import BehavioralScorer
             from scoring.composite import CompositeScorer
-            bscorer = BehavioralScorer()
-            scorer = CompositeScorer(self._jd, self._candidate_store, bscorer)
+            _behavioral_scorer_instance = BehavioralScorer()
+            scorer = CompositeScorer(self._jd, self._candidate_store, _behavioral_scorer_instance)
             composite_results = scorer.rank(rrf_pool)
         except Exception as e:
             logger.error("Composite scoring failed: %s", e)
@@ -178,18 +180,44 @@ class PipelineRunner:
         timings["composite_scoring"] = (time.perf_counter() - t0) * 1000
         logger.info("Composite scored %d candidates", len(composite_results))
 
+        # ── 6b. Min-max score normalization ──────────────────────────────
+        # Spreads the score range to [0.1, 1.0] for non-disqualified candidates,
+        # making the score column more discriminative and useful for evaluation.
+        # Disqualified (score == 0.0) candidates stay at 0.0.
+        import dataclasses
+        non_zero_scores = [r.final_score for r in composite_results if r.final_score > 0.0]
+        if len(non_zero_scores) >= 2:
+            s_min = min(non_zero_scores)
+            s_max = max(non_zero_scores)
+            score_range = s_max - s_min
+            if score_range > 1e-6:
+                composite_results = [
+                    dataclasses.replace(
+                        r,
+                        final_score=round(
+                            0.10 + 0.90 * (r.final_score - s_min) / score_range, 6
+                        ),
+                    ) if r.final_score > 0.0 else r
+                    for r in composite_results
+                ]
+                logger.info(
+                    "Score normalization: range [%.4f, %.4f] → [0.10, 1.00] "
+                    "(%d non-zero candidates)",
+                    s_min, s_max, len(non_zero_scores),
+                )
+
         # ── 7. Trust layer & Reasoning ────────────────────────────────────
         t0 = time.perf_counter()
         trust_verdicts: dict = {}
         reasonings: dict[str, str] = {}
         schema_components: dict[str, ComponentScores] = {}
-        
+
         top_candidates = []
         for cs in composite_results[:top_k]:
             cfv = self._candidate_store.get(cs.candidate_id)
             if cfv:
                 top_candidates.append(cfv)
-                
+
         try:
             from trust.advocate import build_advocate_signals
             from trust.skeptic import build_skeptic_signals
@@ -197,22 +225,23 @@ class PipelineRunner:
             from trust.reasoning_generator import generate_reasoning
             from scoring.skill_match import SkillMatchScorer
             from scoring.career_quality import CareerQualityScorer
-            from scoring.behavioral import BehavioralScorer
-            
+
             skill_results = SkillMatchScorer().score_all(top_candidates, self._jd)
             career_results = CareerQualityScorer(self._jd).score_all(top_candidates)
-            behavioral_results = BehavioralScorer().score_all(top_candidates)
-            
+            # Reuse the already-computed behavioral scorer instance from step 6
+            # to avoid rescoring the same candidates a second time.
+            behavioral_results = _behavioral_scorer_instance.score_all(top_candidates)
+
             for rank_pos, cs in enumerate(composite_results[:top_k], start=1):
                 cid = cs.candidate_id
                 cfv = self._candidate_store.get(cid)
                 if not cfv:
                     continue
-                    
+
                 s_res = skill_results.get(cid)
                 c_res = career_results.get(cid)
                 b_res = behavioral_results.get(cid)
-                
+
                 if s_res and c_res and b_res:
                     schema_comp = ComponentScores(
                         candidate_id=cid,
@@ -233,12 +262,12 @@ class PipelineRunner:
                         signal_count=b_res.signal_count,
                     )
                     schema_components[cid] = schema_comp
-                    
+
                     adv_signals = build_advocate_signals(cfv, schema_comp, s_res, self._jd)
                     skep_signals = build_skeptic_signals(cfv, schema_comp, c_res, b_res, s_res, self._jd)
                     verdict = build_verdict(cfv, schema_comp, adv_signals, skep_signals)
                     trust_verdicts[cid] = verdict
-                    
+
                     reasonings[cid] = generate_reasoning(rank_pos, verdict, cfv, schema_comp)
         except Exception as e:
             logger.error("Trust layer unavailable: %s", e)

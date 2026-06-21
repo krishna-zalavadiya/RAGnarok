@@ -74,9 +74,9 @@ TRAJECTORY_PATH_TOP_K: int = 30     # Path 4: career pattern match
 SIGNAL_PATH_TOP_K: int = 30         # Path 5: behavioral engagement
 
 # After RRF fusion, keep this many candidates before honeypot filter.
-# Needs to be well above SUBMISSION_TOP_K so enough candidates survive
-# honeypot filtering and cross-encoder reranking to fill 100 slots.
-RRF_POOL_SIZE: int = 150
+# Increased from 150 → 200 to ensure the pipeline has enough candidates
+# to fill 100 slots after honeypots, disqualifiers, and CE reranking.
+RRF_POOL_SIZE: int = 200
 
 # After honeypot filter, feed this many to the cross-encoder.
 # Must be >= SUBMISSION_TOP_K so the composite scorer can rank all 100.
@@ -97,9 +97,11 @@ RRF_SIGNAL_PATH_BONUS: float = 1.1     # Path 5 score multiplied by this
 
 # Cross-encoder blend factor used in scoring/composite.py.
 # final = (1 - CE_BLEND_FACTOR) × weighted_sum + CE_BLEND_FACTOR × ce_score
-# 0.30 = cross-encoder has ~30% influence on final score.
-# Tune during Phase 6 calibration: higher values trust CE more over config weights.
-CE_BLEND_FACTOR: float = 0.30
+# Reduced from 0.30 → 0.15: the MS-MARCO cross-encoder is calibrated for web
+# passage retrieval, not HR matching. Its sigmoid output clusters ~0.4–0.6,
+# compressing scores. Lower blend preserves the config-weight driven ranking
+# while still letting CE break ties in the top-50.
+CE_BLEND_FACTOR: float = 0.15
 
 
 # ─────────────────────────────────────────────────────────────────────────────
