@@ -69,13 +69,17 @@ class TrajectoryAnalyzer:
 
         if config.YOE_BAND_IDEAL_MIN <= yoe <= config.YOE_BAND_IDEAL_MAX:
             return 1.0
+
         if yoe < config.YOE_BAND_IDEAL_MIN:
             return max(0.0, (yoe / config.YOE_BAND_IDEAL_MIN) ** 2)
-        if yoe <= config.YOE_BAND_MAX:
-            excess = yoe - config.YOE_BAND_IDEAL_MAX
-            width  = config.YOE_BAND_MAX - config.YOE_BAND_IDEAL_MAX
-            return max(0.0, 1.0 - (excess / width))
-        return 0.25
+
+        excess = yoe - config.YOE_BAND_IDEAL_MAX
+        width = config.YOE_BAND_MAX - config.YOE_BAND_IDEAL_MAX
+
+        if width <= 0:
+            return 0.30
+
+        return max(0.30, 1.0 - (excess / width))
 
     # ── Career score ──────────────────────────────────────────────────────────
 

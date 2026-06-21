@@ -249,17 +249,14 @@ class CompositeScorer:
             # Refines placement without overriding config weights entirely.
             blended = (1.0 - _CE_BLEND) * weighted_sum + _CE_BLEND * ce_score
 
-            # ── Step 3: location bonus (additive, clipped to 1.0) ─────────
-            loc_bonus = _location_bonus(cfv, self._jd)
-            blended   = min(1.0, blended + loc_bonus)
-
-            # ── Step 4: uncertainty penalty ───────────────────────────────
-            # Sourced from BehavioralResult, which is computed off the real
-            # RedrobSignals._SIGNAL_PRESENCE_CHECKS. Do NOT recompute this
-            # locally — a second disagreeing formula was the original bug.
+            # ── Step 3: uncertainty penalty ─────────────────────────
             unc_penalty = beh_result.uncertainty_penalty if beh_result else 1.0
-            blended    *= unc_penalty
+            blended *= unc_penalty
 
+            # ── Step 4: location bonus (hard fact, not uncertainty-sensitive) ──
+            loc_bonus = _location_bonus(cfv, self._jd)
+            blended = min(1.0, blended + loc_bonus)
+            
             blended = float(max(0.0, min(1.0, blended)))
 
             # ── Step 5: hard overrides (after all arithmetic) ─────────────
