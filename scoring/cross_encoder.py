@@ -438,7 +438,7 @@ class CrossEncoderReranker:
         try:
             import torch
 
-            torch.set_num_threads(2)
+            torch.set_num_threads(3)
 
             raw_scores: np.ndarray = self._model.predict(
                 sentences=pairs,
