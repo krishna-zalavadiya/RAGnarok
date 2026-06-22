@@ -193,7 +193,7 @@ Scoring:
 3-5 = Weak fit
 0-3 = Poor fit
 
-Return ONLY a number and reason why not full score or why suchb low score
+Return ONLY a number and reason why not full score or why such a low score
 """
 
 SCORING_PROMPT_TEMPLATE = """\
@@ -213,6 +213,14 @@ Score:"""
 # ─────────────────────────────────────────────────────────────────────────────
 
 class LLMReranker:
+
+    @staticmethod
+    def download_model(repo_id: str, filename: str, local_dir: str):
+        from huggingface_hub import hf_hub_download
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"Downloading model {filename} from {repo_id} to {local_dir}...")
+        hf_hub_download(repo_id=repo_id, filename=filename, local_dir=local_dir)
 
     def __init__(
         self,
