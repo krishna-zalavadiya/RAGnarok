@@ -67,27 +67,27 @@ EMBEDDING_BATCH_SIZE: int = 512
 
 # Number of candidates retrieved per path before RRF fusion.
 # Increased so RRF pool has enough diversity to fill 100 final slots.
-SEMANTIC_PATH_TOP_K: int = 150       # Path 1: FAISS dense similarity
-KEYWORD_PATH_TOP_K: int = 150        # Path 2: BM25 + ontology expansion
-ONTOLOGY_PATH_TOP_K: int = 150       # Path 3: skill graph traversal (Tier-5 rescue)
-TRAJECTORY_PATH_TOP_K: int = 150     # Path 4: career pattern match
-SIGNAL_PATH_TOP_K: int = 150         # Path 5: behavioral engagement
+SEMANTIC_PATH_TOP_K: int = 225       # Path 1: FAISS dense similarity
+KEYWORD_PATH_TOP_K: int = 225        # Path 2: BM25 + ontology expansion
+ONTOLOGY_PATH_TOP_K: int = 210       # Path 3: skill graph traversal (Tier-5 rescue)
+TRAJECTORY_PATH_TOP_K: int = 170     # Path 4: career pattern match
+SIGNAL_PATH_TOP_K: int = 170         # Path 5: behavioral engagement
 
 # After RRF fusion, keep this many candidates before honeypot filter.
 # Increased from 150 → 200 to ensure the pipeline has enough candidates
 # to fill 100 slots after honeypots, disqualifiers, and CE reranking.
-RRF_POOL_SIZE: int = 500
+RRF_POOL_SIZE: int = 600
 
 # After honeypot filter, feed this many to the cross-encoder.
 # Must be >= SUBMISSION_TOP_K so the composite scorer can rank all 100.
-CROSS_ENCODER_TOP_K: int = 200
+CROSS_ENCODER_TOP_K: int = 350
 
 # Final submission size (spec requirement).
 SUBMISSION_TOP_K: int = 100
 
 # ── Reciprocal Rank Fusion ─────────────────────────────────────────────────
-# RRF score = Σ 1 / (k + rank_in_path).  k=60 is the standard smoothing value.
-RRF_K: int = 60
+# RRF score = Σ 1 / (k + rank_in_path). k=120 is optimized for 5 deep paths.
+RRF_K: int = 120
 
 # Bonus multipliers for paths that rescue candidates missed by dense/keyword.
 # Path 3 (ontology graph) and Path 5 (signal) get a boost so Tier-5 candidates
