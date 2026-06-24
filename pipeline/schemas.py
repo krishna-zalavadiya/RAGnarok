@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # Validate scoring weights sum to 1.0 at import time.
 # If someone edits config.py and breaks the constraint, this fires immediately.
-_weight_sum = config.WEIGHT_SKILL + config.WEIGHT_CAREER + config.WEIGHT_BEHAVIORAL
+_weight_sum = config.WEIGHT_SKILL + config.WEIGHT_CAREER + config.WEIGHT_BEHAVIORAL+config.WEIGHT_TRAJECTORY
 if abs(_weight_sum - 1.0) > config._WEIGHT_SUM_TOLERANCE:
     raise ValueError(
         f"Scoring weights in config.py must sum to 1.0, got {_weight_sum:.8f}. "

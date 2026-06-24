@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
@@ -140,6 +141,7 @@ class LLMReranker:
         self._verbose = verbose
         self._max_workers = max_workers
         self._llm = None
+        self._lock = threading.Lock()  # llama_cpp.Llama is NOT thread-safe
 
     def preload(self) -> None:
         """
@@ -197,12 +199,13 @@ class LLMReranker:
         ]
 
         try:
-            out = self._llm.create_chat_completion(
-                messages=messages,
-                temperature=0.4,
-                max_tokens=100,
-                stop=["\n\n", "Sentence 3", "3.", "\nJob:"],
-            )
+            with self._lock:  # serialize: llama_cpp is not thread-safe
+                out = self._llm.create_chat_completion(
+                    messages=messages,
+                    temperature=0.4,
+                    max_tokens=100,
+                    stop=["\n\n", "Sentence 3", "3.", "\nJob:"],
+                )
             text = out["choices"][0]["message"]["content"].strip()
 
             _BANNED_OPENERS = (

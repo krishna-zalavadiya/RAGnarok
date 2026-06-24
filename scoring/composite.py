@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 _W_SKILL      = config.WEIGHT_SKILL       # 0.40
 _W_CAREER     = config.WEIGHT_CAREER      # 0.30
 _W_BEHAVIORAL = config.WEIGHT_BEHAVIORAL  # 0.20
-_W_TRAJECTORY = config.WEIGHT_BEHAVIORAL  # 0.10
+_W_TRAJECTORY = config.WEIGHT_TRAJECTORY  # 0.10
 
 assert abs(_W_SKILL + _W_CAREER + _W_BEHAVIORAL + _W_TRAJECTORY - 1.0) < config._WEIGHT_SUM_TOLERANCE
 
