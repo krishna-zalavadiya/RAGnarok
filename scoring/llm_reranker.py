@@ -102,7 +102,8 @@ _SYSTEM_PROMPT = (
     "Start directly with the fact (e.g. '82% skill match across FAISS...' or "
     "'Inactive 120 days — availability unclear...'). "
     "Sentence 2: give the key counterpoint or the KEY CONDITION that would change this assessment. "
-    "Be concise. No filler phrases."
+    "Be concise. No filler phrases." \
+    "Both sentence combined must be less than 80 words (60 preferred)"
 )
 
 _USER_TEMPLATE = """\
