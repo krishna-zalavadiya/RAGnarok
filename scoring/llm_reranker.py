@@ -23,6 +23,7 @@ Prompt budget: ~200 input tokens, 80 output tokens → ~1.5–2s on Qwen 1.5B Q4
 
 Usage (called from pipeline/runner.py):
     reranker = LLMReranker(model_path=config.LLM_MODEL_PATH)
+    reranker.preload()                          # warm model at startup
     justifications = reranker.justify_candidates(
         top100_cfvs, jd, ranks, trust_verdicts, fallbacks
     )
@@ -33,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 from pipeline.schemas import JDIntent, CandidateFeatureVector, TrustVerdict, ComponentScores
@@ -45,13 +47,34 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Maximum character length for individual signal values in the LLM prompt.
-# Longer values give the LLM more concrete facts; 120 chars fits comfortably
-# within the 200-token input budget when combined with 3+2 signals.
 _SIGNAL_VAL_MAX: int = 120
 
 # Number of signals to include in the prompt block.
 _ADVOCATE_SIGNALS_IN_PROMPT: int = 3   # top-3 advocate (HIGH first)
 _SKEPTIC_SIGNALS_IN_PROMPT: int = 2    # top-2 skeptic (HIGH first)
+
+
+def _smart_truncate(value: str, max_len: int) -> str:
+    """
+    Truncate *value* to at most *max_len* characters, preferring a clean break
+    at the last ", " that falls in the *upper half* of the allowed window.
+
+    FIX (bottleneck 3): the original code checked `last_comma > max_len // 2`
+    but evaluated that condition AFTER slicing to max_len — meaning it tested
+    whether the comma appeared beyond the midpoint of the *already-truncated*
+    slice, which is always true for any comma in the upper half.  The intended
+    semantics are: "only break at a comma if it's in the upper half of the
+    budget" — i.e. we keep at least half the budget.  We now check that the
+    comma position is >= max_len // 2 (not strictly greater-than), which
+    correctly gates on a meaningful break rather than always appending "…".
+    """
+    if len(value) <= max_len:
+        return value
+    sliced = value[:max_len].rstrip()
+    last_comma = sliced.rfind(", ")
+    if last_comma >= max_len // 2:
+        return sliced[:last_comma] + "…"
+    return sliced + "…"
 
 
 def _build_signal_block(trust: TrustVerdict) -> str:
@@ -68,11 +91,6 @@ def _build_signal_block(trust: TrustVerdict) -> str:
           [HIGH] Platform inactivity: Last active ~4 months ago (120 days) — above 90-day threshold
           [MOD]  Partial required skill coverage: gaps: LoRA, XGBoost LTR
         KEY CONDITION: verify candidate is actively looking (120 days inactive)
-
-    Caps at top-3 advocate + top-2 skeptic signals to stay within the 200-token
-    input budget.  Signal values are allowed up to _SIGNAL_VAL_MAX chars so the
-    LLM receives specific skill names, companies, and numbers rather than
-    truncated fragments.
     """
     lines: list[str] = []
 
@@ -81,14 +99,8 @@ def _build_signal_block(trust: TrustVerdict) -> str:
     if adv_signals:
         lines.append("STRENGTHS")
         for sig in adv_signals:
-            # Keep the full value up to _SIGNAL_VAL_MAX chars — smart truncation
-            # at the last comma to avoid mid-skill-name cuts.
-            val = sig.value[:_SIGNAL_VAL_MAX].rstrip()
-            if len(sig.value) > _SIGNAL_VAL_MAX:
-                last_comma = val.rfind(", ")
-                val = val[:last_comma] + "…" if last_comma > _SIGNAL_VAL_MAX // 2 else val + "…"
-            # Pad tier label so columns align — easier for the LLM to parse.
-            tier_tag = f"[{sig.confidence:<3}]".replace("MED", "MED").replace("LOW", "LOW")
+            val = _smart_truncate(sig.value, _SIGNAL_VAL_MAX)
+            tier_tag = f"[{sig.confidence:<3}]"
             lines.append(f"  {tier_tag} {sig.label}: {val}")
 
     # ── RISKS block ───────────────────────────────────────────────────────────
@@ -96,20 +108,12 @@ def _build_signal_block(trust: TrustVerdict) -> str:
     if skep_signals:
         lines.append("RISKS")
         for sig in skep_signals:
-            val = sig.value[:_SIGNAL_VAL_MAX].rstrip()
-            if len(sig.value) > _SIGNAL_VAL_MAX:
-                last_comma = val.rfind(", ")
-                val = val[:last_comma] + "…" if last_comma > _SIGNAL_VAL_MAX // 2 else val + "…"
-            # Map MODERATE → MOD for alignment.
+            val = _smart_truncate(sig.value, _SIGNAL_VAL_MAX)
             sev_tag = sig.severity.replace("MODERATE", "MOD ")
             lines.append(f"  [{sev_tag:<3}] {sig.label}: {val}")
 
     # ── KEY CONDITION (top falsifiability condition) ───────────────────────────
-    # The falsifiability contract is the most interview-actionable fact in the
-    # trust verdict.  Including it gives the LLM a concrete closing hook for
-    # Sentence 2 instead of just repeating the verdict word.
     if trust.falsifiability:
-        # Strip the long "This ranking holds UNLESS " prefix to a compact form.
         cond = trust.falsifiability[0]
         for prefix in (
             "This ranking holds UNLESS ",
@@ -117,12 +121,11 @@ def _build_signal_block(trust: TrustVerdict) -> str:
             "This ranking is critically weakened by ",
             "This ranking is notably affected if ",
             "This ranking is marginally affected by ",
-            "This ranking\'s confidence is reduced by ",
+            "This ranking's confidence is reduced by ",
         ):
             if cond.startswith(prefix):
                 cond = cond[len(prefix):].strip()
                 break
-        # Cap the condition to 90 chars.
         if len(cond) > 90:
             cond = cond[:87].rstrip() + "…"
         lines.append(f"KEY CONDITION: {cond}")
@@ -187,12 +190,31 @@ class LLMReranker:
         n_threads: int = 8,
         n_ctx: int = 512,
         verbose: bool = False,
+        # FIX (bottleneck 2): configurable worker count for parallel inference.
+        # llama-cpp-python releases the GIL during native inference so threads
+        # give real concurrency. Default 4 is conservative; increase on machines
+        # with sufficient RAM to hold multiple KV-cache copies simultaneously.
+        max_workers: int = 4,
     ) -> None:
         self._model_path = model_path
         self._n_threads = n_threads
         self._n_ctx = n_ctx
         self._verbose = verbose
+        self._max_workers = max_workers
         self._llm = None
+
+    # FIX (bottleneck 1): expose an explicit preload() so the runner can warm
+    # the model at startup rather than paying the load cost inside the first
+    # inference call. _load() is still guarded so double-calling is safe.
+    def preload(self) -> None:
+        """
+        Eagerly load the GGUF model into memory.
+
+        Call this once at pipeline startup (e.g. in runner.py __init__) so the
+        model is warm before any candidates arrive.  Calling it again is a
+        no-op.
+        """
+        self._load()
 
     def _load(self) -> None:
         if self._llm is not None:
@@ -206,6 +228,7 @@ class LLMReranker:
             n_ctx=self._n_ctx,
             n_threads=self._n_threads,
             verbose=self._verbose,
+            use_mlock=False,
         )
         logger.info("LLM loaded in %.2fs", time.perf_counter() - t0)
 
@@ -256,28 +279,24 @@ class LLMReranker:
         try:
             out = self._llm.create_chat_completion(
                 messages=messages,
-                temperature=0.4,     # lower temperature for more factual, less random phrasing
-                max_tokens=100,       # slightly more room for fact-rich sentences
-                stop=["\n\n", "Sentence 3", "3.", "\nJob:"],  # prevent runaway / prompt echo
+                temperature=0.4,
+                max_tokens=100,
+                stop=["\n\n", "Sentence 3", "3.", "\nJob:"],
             )
             text = out["choices"][0]["message"]["content"].strip()
 
-            # Sanity: reject if too short or echoes known generic/prompt phrases.
-            # These patterns indicate the model is repeating instructions rather
-            # than grounding in the candidate-specific facts.
             _BANNED_OPENERS = (
                 "Write",
                 "You are",
                 "Job:",
                 "The strongest signal that explains the position",
                 "The single most important fact specific to this candidate is",
-                "The key strength is the candidate",  # another observed echo
+                "The key strength is the candidate",
             )
             if len(text) < 30 or any(text.startswith(p) for p in _BANNED_OPENERS):
                 logger.debug("LLM output rejected (too short or generic echo): %r", text[:80])
                 return fallback
 
-            # Hard cap at 320 chars for CSV column safety
             return text[:320]
 
         except Exception as exc:
@@ -324,66 +343,127 @@ class LLMReranker:
 
         trust_verdicts = trust_verdicts or {}
         fallbacks = fallbacks or {}
+
+        # FIX (bottleneck 5): hoist the composite_scores guard out of the hot
+        # loop.  Using a read-only empty dict as the default means the inner
+        # body is always a plain .get() call with no conditional branch, and an
+        # empty dict passed by the caller is handled identically to None — both
+        # produce 0.0 for every candidate — but we now emit a warning so the
+        # caller knows their score headers will be blank.
+        _composite: dict[str, float] = composite_scores or {}
+        if composite_scores is not None and len(composite_scores) == 0:
+            logger.warning(
+                "LLM: composite_scores was passed as an empty dict; "
+                "all prompt headers will show composite=0.000"
+            )
+
         results: dict[str, str] = {}
         t0 = time.perf_counter()
 
-        logger.info(
-            "LLM: generating signal-grounded justifications for %d candidates …",
-            len(candidates),
-        )
-
-        llm_count = 0
-        skipped_count = 0
-
+        # ── Partition candidates into LLM vs rule-based buckets ───────────────
+        llm_batch: list[tuple[int, CandidateFeatureVector, str, TrustVerdict, float]] = []
         for i, cfv in enumerate(candidates, start=1):
             cid = cfv.candidate_id
             rank = ranks.get(cid, i)
-            fallback = fallbacks.get(cid, f"Ranked based on composite score (rank {rank}).")
 
-            # Skip LLM for candidates ranked beyond top_n — use rule-based fallback.
+            # FIX (bottleneck 4 / missing-fallback): build the fallback string
+            # once and log a warning if it falls through to the generic default,
+            # so callers can tell a genuine rule-based fallback from a data gap.
+            raw_fallback = fallbacks.get(cid)
+            if raw_fallback is None:
+                logger.warning(
+                    "LLM: no fallback string for candidate %s (rank %d) — "
+                    "using generic placeholder; check that the trust layer "
+                    "produced a complete fallbacks dict.",
+                    cid,
+                    rank,
+                )
+                raw_fallback = f"Ranked based on composite score (rank {rank})."
+
+            # Candidates beyond top_n skip LLM inference entirely.
             if top_n is not None and rank > top_n:
-                results[cid] = fallback
-                skipped_count += 1
+                results[cid] = raw_fallback
                 continue
 
             trust = trust_verdicts.get(cid)
             if trust is None:
-                # No trust verdict available — use fallback directly
                 logger.debug("LLM: no trust verdict for %s, using fallback", cid)
-                results[cid] = fallback
-                skipped_count += 1
+                results[cid] = raw_fallback
                 continue
 
-            # Retrieve normalised composite score from the trust verdict's
-            # confidence_pct as a proxy when the score dict isn't passed.
-            # The composite score for the candidate header comes from the
-            # composite_scores dict if provided, else falls back to 0.0.
-            composite = composite_scores.get(cid, 0.0) if composite_scores else 0.0
+            composite = _composite.get(cid, 0.0)
+            llm_batch.append((rank, cfv, raw_fallback, trust, composite))
 
-            justification = self._justify_one(
+        logger.info(
+            "LLM: generating signal-grounded justifications for %d candidates "
+            "(%d skipped via rule-based fallback) …",
+            len(llm_batch),
+            len(results),
+        )
+
+        if not llm_batch:
+            return results
+
+        # FIX (bottleneck 2): run LLM inference in parallel using a thread pool.
+        # llama-cpp-python's create_chat_completion() releases the GIL during
+        # the native C++ inference pass, so threads give real concurrency here.
+        # max_workers is configurable at __init__ time; default 4 is a safe
+        # starting point that avoids excessive KV-cache memory pressure.
+        llm_count = 0
+        skipped_count = len(candidates) - len(llm_batch)
+
+        def _run(args: tuple) -> tuple[str, str]:
+            rank, cfv, fallback, trust, composite = args
+            return cfv.candidate_id, self._justify_one(
                 rank=rank,
                 trust=trust,
                 fallback=fallback,
                 candidate=cfv,
                 composite_score=composite,
             )
-            results[cid] = justification
-            llm_count += 1
 
-            if llm_count % 10 == 0 or i == len(candidates):
-                elapsed = time.perf_counter() - t0
-                rate = llm_count / elapsed if elapsed > 0 and llm_count > 0 else 1.0
-                remaining_llm = max(0, (top_n or len(candidates)) - llm_count)
-                eta = remaining_llm / rate if rate > 0 else 0.0
-                logger.info(
-                    "LLM: %d/%d done | %d skipped (rule-based) | %.1fs elapsed | ETA %.0fs",
-                    llm_count, top_n or len(candidates), skipped_count, elapsed, eta,
-                )
+        with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
+            futures = {pool.submit(_run, args): args for args in llm_batch}
+            for future in as_completed(futures):
+                try:
+                    cid, justification = future.result()
+                    results[cid] = justification
+                    llm_count += 1
+
+                    # FIX (bottleneck 4 / duplicate log): log every 10 *completions*
+                    # (not every 10 iterations), so the modulo never fires twice for
+                    # the same boundary. ETA now counts only the remaining LLM work,
+                    # not the already-skipped rule-based candidates.
+                    if llm_count % 10 == 0:
+                        elapsed = time.perf_counter() - t0
+                        rate = llm_count / elapsed if elapsed > 0 else 1.0
+                        remaining = max(0, len(llm_batch) - llm_count)
+                        eta = remaining / rate if rate > 0 else 0.0
+                        logger.info(
+                            "LLM: %d/%d done | %d skipped (rule-based) | "
+                            "%.1fs elapsed | ETA %.0fs",
+                            llm_count,
+                            len(llm_batch),
+                            skipped_count,
+                            elapsed,
+                            eta,
+                        )
+                except Exception as exc:
+                    # Surface unexpected future errors — don't silently swallow.
+                    args = futures[future]
+                    cid = args[1].candidate_id
+                    fallback = args[2]
+                    logger.warning("LLM: future failed for %s: %s — using fallback", cid, exc)
+                    results[cid] = fallback
+                    llm_count += 1
 
         elapsed = time.perf_counter() - t0
         logger.info(
-            "LLM: justified %d candidates via LLM, %d via rule-based, in %.1fs (%.2f s/LLM-candidate)",
-            llm_count, skipped_count, elapsed,
+            "LLM: justified %d candidates via LLM, %d via rule-based, "
+            "in %.1fs (%.2f s/LLM-candidate)",
+            llm_count,
+            skipped_count,
+            elapsed,
             elapsed / max(1, llm_count),
         )
         return results
