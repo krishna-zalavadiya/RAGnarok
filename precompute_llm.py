@@ -1,10 +1,3 @@
-"""
-precompute_llm_addition.py — Paste this block into your existing precompute.py.
-
-Add it as the LAST step in precompute.py, after all indexes are built.
-This downloads the GGUF model once. rank.py loads it from disk (no network).
-"""
-
 import logging
 import os
 from pathlib import Path

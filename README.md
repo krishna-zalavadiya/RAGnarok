@@ -41,18 +41,18 @@ job_description.md   ──┘       Candidate Parser · JD Parser · Ontology B
                                 Trajectory DB · Honeypot Registry
                                            │
                                            ▼
+                              Honeypot Candidate Remover
+                                           |
+                                           ▼
                         [RANKING WINDOW — ≤ 5 min · CPU · no network]
                          ┌─────────────────────────────────────────┐
-                         │  Path 1: Semantic   (FAISS · top-50)    │
-                         │  Path 2: Keyword    (BM25  · top-50)    │
-                         │  Path 3: Ontology   (graph · top-40)    │
-                         │  Path 4: Trajectory (career· top-30)    │
-                         │  Path 5: Signal     (behav.· top-30)    │
+                         │  Path 1: Semantic   (FAISS · top-350)   │
+                         │  Path 2: Keyword    (BM25  · top-350)   │
+                         │  Path 3: Ontology   (graph · top-280)   │
+                         │  Path 4: Trajectory (career· top-220)   │
+                         │  Path 5: Signal     (behav.· top-200)   │
                          └──────────────┬──────────────────────────┘
-                                        │ RRF Fusion (top-150)
-                                        ▼
-                               Honeypot Filter
-                                        │ top-120
+                                        │ RRF Fusion (top-800)
                                         ▼
                             Cross-Encoder Rerank
                                         │
@@ -62,6 +62,9 @@ job_description.md   ──┘       Candidate Parser · JD Parser · Ontology B
                                         ▼
                          Adversarial Trust Layer
                          (Advocate · Skeptic · Verdict)
+                                        │
+                                        ▼
+                     LLM Reasoning for LLM_TOP_N Candidates
                                         │
                                         ▼
                               submission.csv  (top-100)
@@ -89,11 +92,11 @@ The cross-encoder runs ~80ms per candidate. Pre-filtering impossible profiles wi
 
 ### No LLM API calls — ever
 
-All reasoning is template-based and derived from actual profile fields. No hallucination is possible because every sentence references a field that was read from the candidate record. This satisfies the **no-network** constraint and the spec's Stage 4 hallucination check.
+All reasoning is template-based + Localy Light weight LLM based and derived from actual profile fields. No hallucination is possible because every sentence references a field that was read from the candidate record. This satisfies the **no-network** constraint and the spec's Stage 4 hallucination check.
 
 ### Adversarial reasoning (Advocate + Skeptic + Verdict)
 
-Rather than generating uniform praise for every candidate, the trust layer runs an advocate scan (positive signals) and a skeptic scan (concerns) independently, then synthesises a verdict (`ROBUST` / `CONTESTED` / `FRAGILE`). The reasoning column reflects both sides honestly — which is exactly what Stage 4 manual review rewards.
+Rather than generating uniform praise for every candidate, the trust layer runs an advocate scan (positive signals) and a skeptic scan (concerns) independently, then synthesises a verdict (`ROBUST` / `CONTESTED` / `FRAGILE`). The reasoning column reflects both sides honestly — which is exactly what Stage 4 manual review rewards. This is then given to the LLM for proper validation and reason for LLM_TOP_N candidates.
 
 ---
 
@@ -104,6 +107,7 @@ Rather than generating uniform praise for every candidate, the trust layer runs 
 ├── config.py                   # All constants — never hardcode elsewhere
 ├── rank.py                     # CLI entry point → produces submission.csv
 ├── precompute.py               # Offline index builder (run once)
+├── precompute_llm.py           # Offline LLM downaloader (run once)
 ├── build_indexes.py            # Low-level index build helper
 ├── job_description.md          # The target JD
 ├── parsed_job_description.json # Cached JD parse output
@@ -143,7 +147,8 @@ Rather than generating uniform praise for every candidate, the trust layer runs 
 │   ├── composite.py            # 0.40/0.35/0.25 weighted combination
 │   ├── cross_encoder.py        # ms-marco-MiniLM-L-6-v2 pairwise reranker
 │   ├── honeypot_filter.py      # Runtime honeypot removal (pre-CE)
-|   └── llm_reranker.py         # Runtime LLM Reranking top 300 candidates
+|   ├── trajectory.py           # Runtime career trajectory analysis
+|   └── llm_reranker.py         # Runtime LLM Reranking top candidates
 │
 ├── trust/
 │   ├── advocate.py             # Scans for positive signals → HIGH/MEDIUM/LOW
@@ -172,8 +177,11 @@ Rather than generating uniform praise for every candidate, the trust layer runs 
     └── indexes/                  # Built by precompute.py
         ├── faiss.index
         ├── bm25.pkl
+        ├── candidate_ids.npy
+        ├── features_ids.npy
         ├── features.npy
         ├── trajectory.npy
+        ├── trajectory_ids.npy
         └── honeypots.pkl
 ```
 
@@ -181,7 +189,7 @@ Rather than generating uniform praise for every candidate, the trust layer runs 
 
 ## Setup & Installation
 
-**Requirements:** Python 3.10+, CPU only, ≤ 16 GB RAM.
+**Requirements:** Python 3.10+, CPU only, ≤ 16 GB RAM(16 GB RAM preferred).
 
 ### 1. Clone and install dependencies
 
@@ -203,15 +211,16 @@ from sentence_transformers import SentenceTransformer, CrossEncoder
 SentenceTransformer('all-MiniLM-L6-v2')
 CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 "
-```
 
-Both models are cached in `~/.cache/huggingface/` after first download. During ranking (no-network window), they load from cache. Total cache size: ~102 MB.
+python precompute_llm_addition.py
+```
+Models are cached in `~/.cache/huggingface/` after first download. During ranking (no-network window), they load from cache.
 
 ### 3. Place your data
 
 ```bash
 # Full dataset (from hackathon bundle)
-cp /path/to/candidates.jsonl.gz data/candidates.jsonl.gz
+cp /path/to/candidates.jsonl data/candidates.jsonl
 
 # Job description is already in the repo
 ls job_description.md
@@ -231,18 +240,14 @@ With explicit paths:
 
 ```bash
 python rank.py \
-  --input data/candidates.jsonl.gz \
+  --input data/candidates.jsonl \
   --output output/submission.csv \
   --top-k 100
 ```
 
-Test on the small sample (no pre-computation needed):
-
-```bash
-python rank.py --input data/sample_candidates.json --output output/test.csv
 ```
 
-Validate your output before uploading:
+Validating Output:
 
 ```bash
 python scripts/validate_output.py output/submission.csv
@@ -259,7 +264,7 @@ RAGnarok is explicitly designed as a two-phase system. The 5-minute ranking cons
 Builds all indexes from the raw candidate pool. This step can take longer than 5 minutes and requires network access to download models on first run.
 
 ```bash
-python precompute.py --candidates data/candidates.jsonl.gz
+python precompute.py --candidates data/candidates.jsonl
 ```
 
 What this builds (saved to `data/indexes/`):
@@ -276,10 +281,10 @@ What this builds (saved to `data/indexes/`):
 ### Phase 2 — Ranking (≤ 5 minutes, no network)
 
 ```bash
-python rank.py --input data/candidates.jsonl.gz --output output/submission.csv
+python rank.py --input data/candidates.jsonl --output output/submission.csv
 ```
 
-All indexes load from disk. No model downloads, no API calls. Runs fully offline.
+All indexes load from disk. No API calls. Runs fully offline.
 
 ---
 
@@ -309,8 +314,9 @@ The `PipelineRunner` in `pipeline/runner.py` executes these stages in order:
 
 ```
 final_score = 0.40 × skill_match
-            + 0.35 × career_quality
-            + 0.25 × behavioral
+            + 0.30 × career_quality
+            + 0.20 × behavioral
+            + 0.10 × trajectory
             × uncertainty_penalty        (0.70–1.00 for sparse profiles)
 ```
 
@@ -328,15 +334,15 @@ blended = 0.70 × weighted_sum + 0.30 × cross_encoder_score
 - Ontology partial credit: adjacent skills earn **0.60×** of full credit
 - Endorsement boost: log-scaled, capped at 50 endorsements, max additive boost 0.10
 
-### Career Quality Score (`weight: 0.35`)
+### Career Quality Score (`weight: 0.30`)
 
 - Product-company bonus: **1.20×** for software, fintech, SaaS, food-tech, AI/ML, etc.
-- Consulting-only penalty: **0.35×** if entire career is at TCS/Wipro/Infosys/Accenture et al.
+- Consulting-only penalty: **0.30×** if entire career is at TCS/Wipro/Infosys/Accenture et al.
 - YOE band: ideal 5–9 years; scores taper outside `[4, 12]`
 - Trajectory velocity: promotions/year, percentile-normalised across pool
 - Location bonus: Noida/Pune `+0.08`, Delhi/Gurgaon `+0.05`, Hyderabad/Mumbai `+0.04`, Bangalore `+0.03`
 
-### Behavioral Score (`weight: 0.25`)
+### Behavioral Score (`weight: 0.20`)
 
 | Signal | Weight |
 |--------|--------|
@@ -411,8 +417,9 @@ Measured on an 8-core CPU machine with 16 GB RAM. All times are for the ranking 
 | Cross-encoder (120 candidates) | ~10s | ~80ms × 120 |
 | Composite scoring | ~0.5s | Vectorised numpy |
 | Trust layer (top-100) | ~1s | Rule-based, no model |
+| LLM Reasoning | ~200s | From Trust Layer |
 | CSV write + validate | ~0.1s | |
-| **Total estimate** | **~22s** | **Well within 5-min budget** |
+| **Total estimate** | **~230s** | **Well within 5-min budget** |
 
 ---
 
@@ -422,18 +429,19 @@ All tunable parameters live in `config.py`. Never hardcode values in other modul
 
 ```python
 # Retrieval pool sizes
-SEMANTIC_PATH_TOP_K   = 50
-KEYWORD_PATH_TOP_K    = 50
-ONTOLOGY_PATH_TOP_K   = 40
-TRAJECTORY_PATH_TOP_K = 30
-SIGNAL_PATH_TOP_K     = 30
-RRF_POOL_SIZE         = 150
-CROSS_ENCODER_TOP_K   = 120
+SEMANTIC_PATH_TOP_K   = 350
+KEYWORD_PATH_TOP_K    = 350 
+ONTOLOGY_PATH_TOP_K   = 280
+TRAJECTORY_PATH_TOP_K = 220
+SIGNAL_PATH_TOP_K     = 200 
+RRF_POOL_SIZE         = 800
+CROSS_ENCODER_TOP_K   = 400
 
 # Scoring weights (must sum to 1.0)
 WEIGHT_SKILL          = 0.40
-WEIGHT_CAREER         = 0.35
-WEIGHT_BEHAVIORAL     = 0.25
+WEIGHT_CAREER         = 0.30
+WEIGHT_BEHAVIORAL     = 0.20
+WEIGHT_TRAJECTORY     = 0.20
 
 # Cross-encoder blend
 CE_BLEND_FACTOR       = 0.30

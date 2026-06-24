@@ -126,8 +126,9 @@ CE_BLEND_FACTOR: float = 0.15
 #     candidates. Platform engagement = actual availability.
 
 WEIGHT_SKILL: float = 0.40
-WEIGHT_CAREER: float = 0.35
-WEIGHT_BEHAVIORAL: float = 0.25
+WEIGHT_CAREER: float = 0.30
+WEIGHT_BEHAVIORAL: float = 0.20
+WEIGHT_TRAJECTORY: float = 0.10
 
 # Guard: checked in schemas.py. If weights drift during calibration, this catches it.
 _WEIGHT_SUM_TOLERANCE: float = 1e-6
@@ -376,13 +377,6 @@ LLM_N_THREADS: int = 8
 # Context window. Keep small (512-1024) — our prompts are ~150 tokens.
 # Larger context = more RAM + slower inference.
 LLM_N_CTX: int = 512
- 
-# Blend factor for LLM score in composite.py.
-# final = (1 - CE_BLEND - LLM_BLEND) * weighted_sum
-#        + CE_BLEND  * cross_encoder_score
-#        + LLM_BLEND * llm_score
-# Adjust CE_BLEND_FACTOR down when adding LLM_BLEND so total = 1.0
-LLM_BLEND_FACTOR: float = 0.15   # was 0.0 before LLM integration
  
 # Whether to run the LLM reranker. Set False to skip entirely (e.g. for tests).
 LLM_RERANKER_ENABLED: bool = True
