@@ -1,133 +1,69 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# requirements.txt — Redrob Candidate Ranking System
+# requirements.txt — RAGnarok Candidate Ranking System
 # Python 3.11.2 · CPU-only · No GPU · No network during ranking
 #
 # Install: pip install -r requirements.txt
 #
-# Pinning strategy:
-#   - Exact pins (==) for ML/NLP packages — these have breaking changes
-#     between minor versions and must be reproducible on judge's machine.
-#   - Compatible-release pins (~=) for utilities — patch updates are safe.
-#   - torch is CPU-only; the +cpu build avoids pulling the 2GB CUDA variant.
-#
-# Two install paths:
-#   FULL (dev machine, pre-compute):
-#       pip install -r requirements.txt
-#   RANKING ONLY (judge sandbox, 5-min window):
-#       pip install -r requirements.txt --no-deps  # indexes already built
+# POST-INSTALL STEPS (run once):
+#   1. python -m spacy download en_core_web_sm
+#   2. python precompute_llm.py        # downloads GGUF model
+#   3. python precompute.py            # builds FAISS / BM25 / feature indexes
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 # ── Core ML / NLP ─────────────────────────────────────────────────────────────
 
-# Bi-encoder (all-MiniLM-L6-v2) + cross-encoder (ms-marco-MiniLM-L-6-v2).
-# 3.4.1 is the last stable release before the 4.x API restructure.
+# Bi-encoder (all-MiniLM-L6-v2) + cross-encoder (ms-marco-MiniLM-L-6-v2)
 sentence-transformers==3.4.1
 
-# PyTorch CPU-only build. Avoids the 2GB+ CUDA wheels.
-# torch 2.5.1 is the stable LTS-aligned release for Python 3.12.
-# Must install BEFORE sentence-transformers to avoid wheel conflicts.
-torch==2.5.1
+# PyTorch CPU-only build — must install before sentence-transformers
+torch==2.5.1+cpu --extra-index-url https://download.pytorch.org/whl/cpu
 
-# Hugging Face Transformers — sentence-transformers dependency.
-# 4.57.6 is the last stable 4.x release; 5.x has breaking API changes.
-transformers==4.57.6
+# HuggingFace Transformers — sentence-transformers dependency
+transformers==4.47.1
 
-# Tokenizers — required by transformers. Exact pin prevents ABI mismatches.
-tokenizers==0.22.0
+# Tokenizers — required by transformers; exact pin prevents ABI mismatches
+tokenizers==0.21.0
 
 # ── Vector Search ─────────────────────────────────────────────────────────────
 
-# Facebook FAISS — CPU build only. IVF256 index on 100K candidates.
-# 1.8.0 is stable; 1.9+ changes the index serialization format.
+# FAISS CPU build — IVF256 index for dense similarity search
 faiss-cpu==1.8.0
 
 # ── Keyword Search ────────────────────────────────────────────────────────────
 
-# BM25 sparse retrieval. Only stable version with full Okapi BM25 support.
+# BM25 sparse retrieval (rank.py → retrieval/keyword_path.py)
 rank-bm25==0.2.2
 
 # ── NLP Parsing ───────────────────────────────────────────────────────────────
 
-# spaCy for JD parsing, noun-phrase extraction, seniority signal detection.
-# 3.7.4 is stable on Python 3.12; 3.8.x requires a model re-download.
-# After install, run: python -m spacy download en_core_web_sm
+# spaCy for JD parsing and noun-phrase extraction
+# After install: python -m spacy download en_core_web_sm
 spacy==3.7.4
 
-# ── Numerical / Data ──────────────────────────────────────────────────────────
+# ── Numerical ─────────────────────────────────────────────────────────────────
 
-# NumPy — FAISS, feature store arrays, trajectory DB.
-# 1.26.4 is the last 1.x release; 2.x has breaking C-API changes
-# that some FAISS builds are not yet tested against.
+# NumPy — FAISS arrays, feature store, trajectory DB
 numpy==1.26.4
 
-# Pandas — CSV writing, submission validation helpers.
-pandas==2.2.3
+# ── Fast JSON ─────────────────────────────────────────────────────────────────
 
-# SciPy — normalisation utilities in scoring modules.
-scipy==1.14.1
+# orjson — fast streaming JSON/JSONL parsing in rank.py
+orjson==3.10.18
 
-# ── API Layer (Phase 5 — FastAPI sandbox) ─────────────────────────────────────
+# ── LLM Reranker ─────────────────────────────────────────────────────────────
 
-# FastAPI web framework for the sandbox /rank endpoint.
-fastapi==0.115.14
+# llama-cpp-python — CPU inference for Qwen2.5 GGUF model
+llama-cpp-python==0.3.2
 
-# ASGI server for FastAPI.
-uvicorn==0.34.3
+# huggingface-hub — GGUF model download in precompute_llm.py
+huggingface-hub==0.24.0
 
-# Multipart form data (file upload in sandbox UI).
-python-multipart==0.0.25
+# ── Progress ─────────────────────────────────────────────────────────────────
 
-# Pydantic v2 — FastAPI dependency + api/schemas.py validation.
-pydantic==2.10.6
-
-
-# ── Serialisation / Config ────────────────────────────────────────────────────
-
-# YAML for submission_metadata.yaml parsing.
-pyyaml==6.0.2
-
-# Pickle is stdlib — used for BM25 + honeypot set serialisation.
-# No extra install needed.
-
-# ── Progress / Logging ────────────────────────────────────────────────────────
-
-# Progress bars for pre-computation (encoding 100K candidates).
+# tqdm — progress bars during pre-computation (candidate_parser.py)
 tqdm==4.67.1
 
 # ── Testing ───────────────────────────────────────────────────────────────────
 
-# Test runner.
 pytest==8.3.5
-
-# Coverage reporting.
 pytest-cov==6.1.0
-
-# llm specific installs
-llama-cpp-python==0.3.2
-huggingface-hub==0.24.0
-
-# ─────────────────────────────────────────────────────────────────────────────
-# POST-INSTALL STEPS (run once after pip install)
-# ─────────────────────────────────────────────────────────────────────────────
-#
-# 1. Download spaCy language model (required by pipeline/jd_parser.py):
-#       python -m spacy download en_core_web_sm
-#
-# 2. Pre-download sentence-transformer models (required by precompute.py):
-#       python -c "from sentence_transformers import SentenceTransformer; \
-#                  SentenceTransformer('all-MiniLM-L6-v2'); \
-#                  from sentence_transformers import CrossEncoder; \
-#                  CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
-#
-# Both models are cached in ~/.cache/huggingface/ after first download.
-# During ranking (5-min window, no network), they load from cache.
-# Total cache size: ~22MB (bi-encoder) + ~80MB (cross-encoder) = ~102MB.
-#
-# 3. Run pre-computation (outside 5-min window):
-#       python precompute.py --candidates data/candidates.jsonl.gz
-#
-# 4. Verify everything works on sample:
-#       python rank.py --candidates data/sample_candidates.json --out output/test.csv
-#       python validate_submission.py output/test.csv
-# ─────────────────────────────────────────────────────────────────────────────

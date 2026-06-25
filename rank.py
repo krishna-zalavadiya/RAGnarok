@@ -39,10 +39,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input", "-i",
         type=Path,
-        # Prefer full dataset in priority order:
-        # 1. candidates.jsonl.gz (compressed, production)
-        # 2. candidates.jsonl    (uncompressed, also valid)
-        # 3. sample_candidates.json (fallback, 50 samples only)
         default=(
             config.CANDIDATES_JSONL_GZ if config.CANDIDATES_JSONL_GZ.exists()
             else config.CANDIDATES_JSONL if config.CANDIDATES_JSONL.exists()
@@ -72,12 +68,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 import io
-import gzip
-import json
-import logging
-import sys
-from pathlib import Path
-import orjson  # pip install orjson
+import orjson
 
 logger = logging.getLogger(__name__)
 
@@ -93,21 +84,20 @@ def _load_candidates(input_path: Path) -> list:
     candidates = []
     errors = 0
 
-    # 1. Open the file as a stream (handles .gz seamlessly without full decompression in RAM)
+    # Open as stream — handles .gz without full decompression in RAM
     base_file = open(input_path, "rb")
     file_stream = gzip.open(base_file, "rb") if input_path.suffix == ".gz" else base_file
 
     try:
-        # 2. Peak at the first non-empty byte to detect JSON vs JSONL
+        # Peek at first non-empty byte to detect JSON array vs JSONL
         first_byte = b""
         for chunk in iter(lambda: file_stream.read(1), b""):
             if chunk.strip():
                 first_byte = chunk
                 break
-        
-        # 3. Parse based on format
+
         if first_byte == b"[":
-            # Standard JSON Array: Use orjson on the remaining full read (orjson handles bytes directly)
+            # JSON array
             try:
                 full_bytes = first_byte + file_stream.read()
                 arr = orjson.loads(full_bytes)
@@ -121,16 +111,13 @@ def _load_candidates(input_path: Path) -> list:
                 logger.error("JSON parse error: %s", e)
                 sys.exit(1)
         else:
-            # JSONL: Process line-by-line as a true stream
-            # Put the first byte back so the first line is complete
+            # JSONL: stream line-by-line
             buffered_stream = io.BufferedReader(file_stream)
-            
             for line_no, line in enumerate(buffered_stream, start=1):
                 line = line.strip()
                 if not line:
                     continue
                 try:
-                    # orjson.loads() accepts raw bytes directly—no .decode("utf-8") needed!
                     candidates.append(parser.parse_candidate(orjson.loads(line)))
                 except Exception as e:
                     errors += 1
@@ -211,16 +198,13 @@ def main() -> None:
     args = _parse_args()
     t_start = time.perf_counter()
 
-    # ── 1. Load candidates ────────────────────────────────────────────────────
     candidates = _load_candidates(args.input)
     if not candidates:
         logger.error("No candidates loaded — aborting.")
         sys.exit(1)
 
-    # ── 2. Load JD ────────────────────────────────────────────────────────────
     jd_intent = _load_jd(args.jd)
 
-    # ── 3. Run pipeline ───────────────────────────────────────────────────────
     logger.info("Starting pipeline (top_k=%d) …", args.top_k)
     from pipeline.runner import PipelineRunner
     runner = PipelineRunner(jd=jd_intent, candidates=candidates)
@@ -234,13 +218,10 @@ def main() -> None:
     for stage, ms in timings.items():
         logger.info("  %-25s %7.1f ms", stage, ms)
 
-    # ── 4. Write CSV ──────────────────────────────────────────────────────────
     _write_csv(ranked, args.output)
-
-    # ── 5. Validate ───────────────────────────────────────────────────────────
     _validate_submission(args.output, args.top_k)
 
-    # ── 6. Print top-10 summary ───────────────────────────────────────────────
+    # Print top-10 summary
     print(f"\n{'-'*70}")
     print(f"  RAGnarok — Top {min(10, len(ranked))} Candidates")
     print(f"{'-'*70}")
