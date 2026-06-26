@@ -13,10 +13,7 @@ from pipeline.schemas import RetrievalResult
 
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Feature column indices — must match the order in feature_store.py
-# ─────────────────────────────────────────────────────────────────────────────
-
 FEAT_COL_RECENCY:              int = 0
 FEAT_COL_RESPONSE_RATE:        int = 1
 FEAT_COL_OPEN_TO_WORK:         int = 2
@@ -42,35 +39,8 @@ _WEIGHT_KEYS: list[str] = [
 _CAND_ID_RE = re.compile(r"^CAND_[0-9]{7}$")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # SignalPath
-# ─────────────────────────────────────────────────────────────────────────────
-
 class SignalPath:
-    """
-    Behavioral engagement retrieval path (Path 5 of 5).
-
-    Surfaces candidates who are actively engaged with the platform right now:
-    recently active, open to work, short notice period, responsive to
-    recruiters, with an active GitHub and complete profile.
-
-    Typical production usage:
-        # Load once in runner.py at startup
-        path = SignalPath.from_disk()
-
-        # Call once per ranking run — no JDIntent needed
-        results = path.retrieve(top_k=15)
-
-    Unit-test usage (no real index needed):
-        data = np.array([
-            [0.95, 0.9, 1.0, 1.0, 0.7, 0.9, 0.85],  # highly engaged
-            [0.10, 0.1, 0.0, 0.0, 0.5, 0.4, 0.50],  # inactive
-        ], dtype=np.float32)
-        ids = np.array(["CAND_0000031", "CAND_0000002"], dtype=object)
-        path = SignalPath(feature_data=data, candidate_ids=ids)
-        results = path.retrieve(top_k=15)
-    """
-
     PATH_NAME: str = "signal"
 
     def __init__(
@@ -80,21 +50,6 @@ class SignalPath:
         index_path:    Optional[Path] = None,
         id_map_path:   Optional[Path] = None,
     ) -> None:
-        """
-        Args:
-            feature_data:   Pre-loaded numpy array shape (N, 7+), dtype float32.
-                            If supplied, index_path is ignored.
-            candidate_ids:  1-D numpy string array length N, aligned with
-                            rows of feature_data.
-            index_path:     Path to features.npy.
-                            Defaults to config.FEATURE_STORE_PATH.
-            id_map_path:    Path to feature_ids.npy.
-                            Defaults to config.FEATURE_IDS_PATH.
-
-        Raises:
-            ValueError: feature_data supplied without candidate_ids, or
-                        shape/alignment mismatch.
-        """
         self._index_path:  Path = index_path  or config.FEATURE_STORE_PATH
         self._id_map_path: Path = id_map_path or config.FEATURE_IDS_PATH
 
@@ -118,34 +73,13 @@ class SignalPath:
                 len(self._ids),
             )
 
-    # ------------------------------------------------------------------ #
-    # Factory — production path                                            #
-    # ------------------------------------------------------------------ #
-
+    # Factory — production path 
     @classmethod
     def from_disk(
         cls,
         index_path:  Optional[Path] = None,
         id_map_path: Optional[Path] = None,
     ) -> "SignalPath":
-        """
-        Load feature store from .npy files and return a ready instance.
-
-        Call once in pipeline/runner.py at startup; reuse across retrieve()
-        calls.
-
-        Args:
-            index_path:  Override for config.FEATURE_STORE_PATH.
-            id_map_path: Override for config.FEATURE_IDS_PATH.
-
-        Returns:
-            Fully loaded SignalPath instance.
-
-        Raises:
-            FileNotFoundError: features.npy or feature_ids.npy not found.
-            ValueError:        Shape mismatch, alignment error, or wrong
-                               number of columns.
-        """
         instance = cls(index_path=index_path, id_map_path=id_map_path)
         instance._ensure_loaded()
         return instance
@@ -158,30 +92,6 @@ class SignalPath:
         self,
         top_k: int = config.SIGNAL_PATH_TOP_K,
     ) -> list[RetrievalResult]:
-        """
-        Score all candidates by behavioral engagement and return top-K.
-
-        No JDIntent required — engagement signals are JD-agnostic.
-
-        Scoring is a single vectorised matrix-vector dot product:
-            scores = feature_matrix[:, :7] @ weight_vector
-        Running time: < 50 ms for 100 K candidates on a single CPU core.
-
-        Args:
-            top_k: Maximum candidates to return.
-                   Defaults to config.SIGNAL_PATH_TOP_K (15).
-
-        Returns:
-            list[RetrievalResult] sorted by engagement score descending,
-            length ≤ top_k. Candidates with score ≤ 0.0 excluded.
-
-            path_name    = "signal"
-            path_score   ∈ (0.0, 1.0]
-            rank_in_path = 1-indexed position within this path
-
-        Raises:
-            ValueError: top_k < 1.
-        """
         self._ensure_loaded()
 
         if top_k < 1:
@@ -231,21 +141,8 @@ class SignalPath:
         )
         return results
 
-    # ------------------------------------------------------------------ #
-    # Vectorised scoring                                                   #
-    # ------------------------------------------------------------------ #
-
+    # Vectorised scoring 
     def _compute_scores(self) -> np.ndarray:
-        """
-        Compute engagement scores for all N candidates in one dot product.
-
-        Uses only the first N_SIGNAL_COLS (7) columns of the feature matrix.
-        Any additional columns stored in features.npy (raw signals, derived
-        features, etc.) are ignored here.
-
-        Returns:
-            numpy array shape (N,), dtype float32, values in [0.0, 1.0].
-        """
         # Slice to the 7 engagement columns; clip to guard against any
         # out-of-range values written by feature_store.py
         feature_slice: np.ndarray = np.clip(
@@ -254,25 +151,9 @@ class SignalPath:
         scores: np.ndarray = feature_slice @ self._weights
         return np.clip(scores, 0.0, 1.0).astype(np.float32)
 
-    # ------------------------------------------------------------------ #
-    # Weight vector construction                                           #
-    # ------------------------------------------------------------------ #
-
+    # Weight vector construction  
     @staticmethod
     def _build_weight_vector() -> np.ndarray:
-        """
-        Build the weight vector from config.BEHAVIORAL_WEIGHTS in column order.
-
-        The order is defined by _WEIGHT_KEYS, which mirrors the column order
-        in features.npy. Both must be kept in sync with feature_store.py.
-
-        Returns:
-            numpy array shape (7,), dtype float32, values sum to 1.0.
-
-        Raises:
-            KeyError: A required weight key is missing from BEHAVIORAL_WEIGHTS.
-            ValueError: Weights do not sum to 1.0 (catches config drift).
-        """
         weights: list[float] = []
         for key in _WEIGHT_KEYS:
             if key not in config.BEHAVIORAL_WEIGHTS:
@@ -292,12 +173,8 @@ class SignalPath:
             )
         return weight_arr
 
-    # ------------------------------------------------------------------ #
-    # Loading helpers                                                      #
-    # ------------------------------------------------------------------ #
-
+    # Loading helpers
     def _ensure_loaded(self) -> None:
-        """Load feature arrays from disk if not already in memory."""
         if self._loaded:
             return
         self._data    = self._load_feature_data(self._index_path)
@@ -313,16 +190,6 @@ class SignalPath:
 
     @staticmethod
     def _load_feature_data(path: Path) -> np.ndarray:
-        """
-        Load features.npy — must have shape (N, 7+), dtype float32.
-
-        Using allow_pickle=False because the file contains only float data.
-
-        Raises:
-            FileNotFoundError: File not found at path.
-            ValueError:        Wrong shape (< 7 columns) or bad dtype.
-            RuntimeError:      numpy I/O error.
-        """
         if not path.exists():
             raise FileNotFoundError(
                 f"Feature store not found: '{path}'. "
@@ -355,14 +222,6 @@ class SignalPath:
 
     @staticmethod
     def _load_id_map(path: Path) -> np.ndarray:
-        """
-        Load feature_ids.npy — 1-D string array of CAND_XXXXXXX values.
-
-        Raises:
-            FileNotFoundError: File not found at path.
-            ValueError:        Not 1-D or ID format incorrect.
-            RuntimeError:      numpy I/O error.
-        """
         if not path.exists():
             raise FileNotFoundError(
                 f"Feature ID map not found: '{path}'. "
@@ -389,7 +248,6 @@ class SignalPath:
         return arr
 
     def _validate_loaded_data(self) -> None:
-        """Verify row count alignment between data and ID arrays."""
         if self._data is None or self._ids is None:
             return
         if len(self._data) != len(self._ids):
@@ -399,30 +257,11 @@ class SignalPath:
                 "Re-run precompute.py to rebuild aligned indexes."
             )
 
-    # ------------------------------------------------------------------ #
-    # Introspection helpers                                                #
-    # ------------------------------------------------------------------ #
-
+    # Introspection helpers 
     def explain_candidate(
         self,
         candidate_idx: int,
     ) -> dict[str, float]:
-        """
-        Return per-signal breakdown for a single candidate row.
-
-        Useful for the trust layer and UI score breakdown.
-
-        Args:
-            candidate_idx: Row index into the feature matrix (0-based).
-
-        Returns:
-            Dict mapping signal name → weighted contribution to final score.
-            Keys match _WEIGHT_KEYS. Sum of values = overall score.
-
-        Raises:
-            IndexError: candidate_idx out of range.
-            RuntimeError: Called before index is loaded.
-        """
         if not self._loaded or self._data is None:
             raise RuntimeError("SignalPath not loaded. Call from_disk() first.")
         if candidate_idx < 0 or candidate_idx >= len(self._data):
@@ -438,12 +277,10 @@ class SignalPath:
 
     @property
     def loaded(self) -> bool:
-        """True if feature data is ready for scoring."""
         return self._loaded
 
     @property
     def n_candidates(self) -> int:
-        """Number of candidates in the feature store (0 if not loaded)."""
         return int(len(self._ids)) if self._loaded and self._ids is not None else 0
 
     def __repr__(self) -> str:
@@ -454,21 +291,11 @@ class SignalPath:
         return f"SignalPath({status})"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Module-level convenience
-# ─────────────────────────────────────────────────────────────────────────────
-
 def retrieve_signal(
     top_k: int = config.SIGNAL_PATH_TOP_K,
     index_path:  Optional[Path] = None,
     id_map_path: Optional[Path] = None,
 ) -> list[RetrievalResult]:
-    """
-    One-shot convenience: load feature store and retrieve top-K candidates.
-
-    Creates a new SignalPath on each call (disk I/O).
-    For repeated calls use SignalPath.from_disk() once and reuse.
-    """
     path = SignalPath.from_disk(index_path=index_path, id_map_path=id_map_path)
     return path.retrieve(top_k=top_k)
-

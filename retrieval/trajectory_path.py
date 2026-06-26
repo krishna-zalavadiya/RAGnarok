@@ -13,10 +13,7 @@ from pipeline.schemas import JDIntent, RetrievalResult
 
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Column index constants — shared with indexing/trajectory_builder.py
-# ─────────────────────────────────────────────────────────────────────────────
-
 COL_PROMOTIONS_PER_YEAR: int = 0   # float  >= 0.0
 COL_YOE:                 int = 1   # float  years_of_experience
 COL_HAS_PRODUCT_CO:      int = 2   # float  0.0 or 1.0
@@ -31,32 +28,8 @@ _IC_RISER_BONUS: float = 1.10
 _CAND_ID_RE = re.compile(r"^CAND_[0-9]{7}$")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # TrajectoryPath
-# ─────────────────────────────────────────────────────────────────────────────
-
 class TrajectoryPath:
-    """
-    Career-pattern trajectory retrieval path (Path 4 of 5).
-
-    Typical production usage:
-        # Load once in runner.py at startup
-        path = TrajectoryPath.from_disk()
-
-        # Call once per JD in the ranking loop
-        results = path.retrieve(jd_intent, top_k=15)
-
-    Unit-test usage (no real index needed):
-        import numpy as np
-        data = np.array([
-            [0.75, 6.0, 1.0, 1.0, 0.0],   # IC-riser, product co
-            [0.00, 8.0, 0.0, 0.0, 1.0],   # stagnant, consulting only
-            [0.25, 3.0, 1.0, 0.0, 0.0],   # junior, product co
-        ], dtype=np.float32)
-        ids = np.array(["CAND_0000031", "CAND_0000002", "CAND_0000011"], dtype=object)
-        path = TrajectoryPath(trajectory_data=data, candidate_ids=ids)
-        results = path.retrieve(jd_intent)
-    """
 
     PATH_NAME: str = "trajectory"
 
@@ -67,21 +40,6 @@ class TrajectoryPath:
         index_path: Optional[Path] = None,
         id_map_path: Optional[Path] = None,
     ) -> None:
-        """
-        Args:
-            trajectory_data: Pre-loaded numpy array shape (N, 5), dtype float32.
-                             Takes priority over index_path when supplied.
-            candidate_ids:   1-D numpy string array length N, aligned with rows
-                             of trajectory_data.
-            index_path:      Path to trajectory.npy.
-                             Defaults to config.TRAJECTORY_PATH.
-            id_map_path:     Path to trajectory_ids.npy.
-                             Defaults to config.TRAJECTORY_IDS_PATH.
-
-        Raises:
-            ValueError: trajectory_data supplied without candidate_ids, or
-                        shape/size mismatch between them.
-        """
         self._index_path:  Path = index_path  or config.TRAJECTORY_PATH
         self._id_map_path: Path = id_map_path or config.TRAJECTORY_IDS_PATH
 
@@ -105,71 +63,23 @@ class TrajectoryPath:
                 len(self._ids),
             )
 
-    # ------------------------------------------------------------------ #
-    # Factory — production path                                            #
-    # ------------------------------------------------------------------ #
-
+    # Factory — production path 
     @classmethod
     def from_disk(
         cls,
         index_path:  Optional[Path] = None,
         id_map_path: Optional[Path] = None,
     ) -> "TrajectoryPath":
-        """
-        Load trajectory data from .npy files and return a ready instance.
-
-        Call once in pipeline/runner.py at startup; reuse across retrieve()
-        calls to avoid repeated I/O.
-
-        Args:
-            index_path:  Override for config.TRAJECTORY_PATH.
-            id_map_path: Override for config.TRAJECTORY_IDS_PATH.
-
-        Returns:
-            Fully loaded TrajectoryPath.
-
-        Raises:
-            FileNotFoundError: trajectory.npy or trajectory_ids.npy not found.
-            ValueError:        Array shape or alignment error.
-        """
         instance = cls(index_path=index_path, id_map_path=id_map_path)
         instance._ensure_loaded()
         return instance
 
-    # ------------------------------------------------------------------ #
-    # Primary retrieve method                                              #
-    # ------------------------------------------------------------------ #
-
+    # Primary retrieve method
     def retrieve(
         self,
         jd_intent: JDIntent,
         top_k: int = config.TRAJECTORY_PATH_TOP_K,
     ) -> list[RetrievalResult]:
-        """
-        Score all candidates by trajectory quality and return top-K.
-
-        Scoring is fully vectorised over the numpy data array — no Python
-        loops over candidates. Runs in < 500 ms for 100 K candidates.
-
-        Args:
-            jd_intent: Parsed JDIntent. Uses:
-                         yoe_ideal_min / yoe_ideal_max — ideal YOE band
-                         yoe_min / yoe_max             — soft outer bounds
-                         disqualify_consulting_only    — extra penalty flag
-            top_k:     Maximum candidates to return.
-                       Defaults to config.TRAJECTORY_PATH_TOP_K (15).
-
-        Returns:
-            list[RetrievalResult] sorted by trajectory score descending,
-            length ≤ top_k. Candidates with score = 0.0 are excluded.
-
-            path_name    = "trajectory"
-            path_score   ∈ (0.0, 1.0]
-            rank_in_path = 1-indexed position within this path
-
-        Raises:
-            ValueError: top_k < 1.
-        """
         self._ensure_loaded()
 
         if top_k < 1:
@@ -221,16 +131,8 @@ class TrajectoryPath:
         )
         return results
 
-    # ------------------------------------------------------------------ #
-    # Vectorised scoring                                                   #
-    # ------------------------------------------------------------------ #
-
+    # Vectorised scoring 
     def _compute_scores(self, jd_intent: JDIntent) -> np.ndarray:
-        """
-        Apply JD-specific trajectory scoring to all N candidates at once.
-
-        Returns numpy array of shape (N,), dtype float32, values in [0, 1].
-        """
         data = self._data  # shape (N, 5)
 
         promo_per_yr:   np.ndarray = data[:, COL_PROMOTIONS_PER_YEAR]
@@ -282,12 +184,8 @@ class TrajectoryPath:
 
         return np.clip(base, 0.0, 1.0).astype(np.float32)
 
-    # ------------------------------------------------------------------ #
-    # Loading helpers                                                      #
-    # ------------------------------------------------------------------ #
-
+    # Loading helpers 
     def _ensure_loaded(self) -> None:
-        """Load trajectory arrays from disk if not already in memory."""
         if self._loaded:
             return
         self._data = self._load_trajectory_data(self._index_path)
@@ -301,17 +199,6 @@ class TrajectoryPath:
 
     @staticmethod
     def _load_trajectory_data(path: Path) -> np.ndarray:
-        """
-        Load trajectory.npy — must be shape (N, 5), dtype float32.
-
-        allow_pickle=False is safe here because the file contains only
-        numeric data (no Python objects).
-
-        Raises:
-            FileNotFoundError: File not found at path.
-            ValueError:        Wrong shape or non-numeric dtype.
-            RuntimeError:      numpy failed to load the file.
-        """
         if not path.exists():
             raise FileNotFoundError(
                 f"Trajectory data not found: '{path}'. "
@@ -342,14 +229,6 @@ class TrajectoryPath:
 
     @staticmethod
     def _load_id_map(path: Path) -> np.ndarray:
-        """
-        Load trajectory_ids.npy — 1-D string array of CAND_XXXXXXX values.
-
-        Raises:
-            FileNotFoundError: File not found at path.
-            ValueError:        Array is not 1-D or IDs are malformed.
-            RuntimeError:      numpy failed to load the file.
-        """
         if not path.exists():
             raise FileNotFoundError(
                 f"Trajectory ID map not found: '{path}'. "
@@ -378,12 +257,6 @@ class TrajectoryPath:
         return arr
 
     def _validate_loaded_data(self) -> None:
-        """
-        Verify alignment between trajectory data rows and candidate IDs.
-
-        Raises:
-            ValueError: Row count mismatch between data and id arrays.
-        """
         if self._data is None or self._ids is None:
             return
         if len(self._data) != len(self._ids):
@@ -393,18 +266,13 @@ class TrajectoryPath:
                 "Re-run precompute.py to rebuild aligned indexes."
             )
 
-    # ------------------------------------------------------------------ #
-    # Properties                                                           #
-    # ------------------------------------------------------------------ #
-
+    # Properties 
     @property
     def loaded(self) -> bool:
-        """True if trajectory data is ready for scoring."""
         return self._loaded
 
     @property
     def n_candidates(self) -> int:
-        """Number of candidates in the trajectory index (0 if not loaded)."""
         return int(len(self._ids)) if self._loaded and self._ids is not None else 0
 
     def __repr__(self) -> str:
@@ -415,10 +283,7 @@ class TrajectoryPath:
         return f"TrajectoryPath({status})"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Vectorised YOE band scoring — module-level for reuse by scoring/trajectory.py
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _yoe_band_score(
     yoe: np.ndarray,
     ideal_min: float,
@@ -426,25 +291,6 @@ def _yoe_band_score(
     soft_min: float,
     soft_max: float,
 ) -> np.ndarray:
-    """
-    Score years-of-experience alignment with a JD YOE band.
-
-    Band structure:
-        outside [soft_min, soft_max] → 0.0
-        [soft_min, ideal_min)        → linear 0.4 → 1.0
-        [ideal_min, ideal_max]       → 1.0  (ideal band)
-        (ideal_max, soft_max]        → linear 1.0 → 0.4
-
-    Args:
-        yoe:       numpy array of candidate YOE values (float).
-        ideal_min: Lower bound of ideal range  (e.g. 5.0 for this JD).
-        ideal_max: Upper bound of ideal range  (e.g. 9.0).
-        soft_min:  Soft lower outer bound       (e.g. 4.0).
-        soft_max:  Soft upper outer bound       (e.g. 12.0).
-
-    Returns:
-        numpy array of scores in [0.0, 1.0], same shape as yoe.
-    """
     scores = np.zeros_like(yoe, dtype=np.float32)
 
     # Guard against degenerate band (all zeros)
@@ -472,22 +318,13 @@ def _yoe_band_score(
     return np.clip(scores, 0.0, 1.0).astype(np.float32)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Module-level convenience
-# ─────────────────────────────────────────────────────────────────────────────
-
 def retrieve_trajectory(
     jd_intent: JDIntent,
     top_k: int = config.TRAJECTORY_PATH_TOP_K,
     index_path:  Optional[Path] = None,
     id_map_path: Optional[Path] = None,
 ) -> list[RetrievalResult]:
-    """
-    One-shot convenience: load trajectory index and retrieve top-K candidates.
-
-    Creates a new TrajectoryPath on each call (disk I/O).
-    For repeated calls use TrajectoryPath.from_disk() and reuse the instance.
-    """
     path = TrajectoryPath.from_disk(
         index_path=index_path, id_map_path=id_map_path
     )

@@ -18,40 +18,7 @@ _TRANSFER_HIT_STEP: float = 0.1     # per-additional-hit bonus (caps at MAX)
 
 
 class SkillGraph:
-    """
-    Directed domain-transfer graph for retrieving Tier-5 candidates.
-
-    Usage:
-        graph = SkillGraph()
-
-        # Build once per JD (fast — just dict lookups)
-        rescue_map = graph.build_jd_rescue_map(jd_intent.required_skills)
-
-        # Score a single candidate
-        score = graph.score_candidate_skills(
-            candidate.skill_names_lower, rescue_map
-        )
-
-        # Or rank a whole pool (Path 3 primary entry point)
-        results = graph.rank_by_domain_transfer(
-            candidate_skills_map={cid: fvec.skill_names_lower for cid, fvec in pool},
-            jd_required_skills=jd_intent.required_skills,
-            top_k=config.ONTOLOGY_PATH_TOP_K,
-        )
-    """
-
     def __init__(self, skill_map_path: Optional[Path] = None) -> None:
-        """
-        Load skill_map.json and build internal adjacency structures.
-
-        Args:
-            skill_map_path: Override path (for testing). Defaults to
-                            config.SKILL_MAP_PATH.
-
-        Raises:
-            FileNotFoundError: skill_map.json not found.
-            ValueError:        JSON missing required sections.
-        """
         self._skill_map_path: Path = skill_map_path or config.SKILL_MAP_PATH
 
         # Forward adjacency  : source_skill → {target_skill, ...}
@@ -64,15 +31,7 @@ class SkillGraph:
         self._loaded: bool = False
         self._load()
 
-    # ------------------------------------------------------------------ #
-    # Internal loading                                                     #
-    # ------------------------------------------------------------------ #
-
     def _load(self) -> None:
-        """
-        Parse skill_map.json.
-        Build forward adjacency, reverse adjacency, and synonym lookup.
-        """
         path = self._skill_map_path
 
         if not path.exists():
@@ -128,34 +87,12 @@ class SkillGraph:
             len(self._synonyms),
         )
 
-    # ------------------------------------------------------------------ #
-    # Internal BFS helper                                                  #
-    # ------------------------------------------------------------------ #
-
+    # Internal BFS helper 
     def _bfs_rescue_sources(
         self,
         target_skill: str,
         depth: int = 1,
     ) -> frozenset[str]:
-        """
-        BFS backward from target_skill, collecting all source-domain skills
-        that can transfer INTO it within `depth` hops.
-
-        For each discovered source, also includes all synonyms of that source
-        so that e.g. "recsys" is collected when "recommendation systems" is
-        found in the graph.
-
-        The target_skill itself is excluded from the returned set.
-
-        Args:
-            target_skill: A JD required skill (lowercase).
-            depth:        BFS hop limit. Default 1 (direct transfers only).
-                          Depth 2 adds indirect transfers (broader but noisier).
-
-        Returns:
-            frozenset of source-skill strings (lowercase) that transfer into
-            target_skill within depth hops. Empty frozenset if none found.
-        """
         target = target_skill.lower().strip()
         visited: set[str] = {target}
         collected: set[str] = set()  # sources found (excludes target)
@@ -193,44 +130,12 @@ class SkillGraph:
         )
         return frozenset(collected)
 
-    # ------------------------------------------------------------------ #
-    # Public API — JD rescue map                                           #
-    # ------------------------------------------------------------------ #
-
+    # Public API — JD rescue map
     def build_jd_rescue_map(
         self,
         jd_required_skills: list[str],
         bfs_depth: int = 1,
     ) -> dict[str, frozenset[str]]:
-        """
-        Build the JD-specific rescue map: for each required skill, the full
-        set of candidate skills that "transfer in" to it via the domain graph.
-
-        This is computed once per JD and reused for scoring all candidates.
-
-        Args:
-            jd_required_skills: Lowercase required skill names from JDIntent.
-            bfs_depth:          BFS depth for source discovery. 1 = direct
-                                transfers only (recommended for production).
-
-        Returns:
-            dict mapping each JD required skill → frozenset of source domain
-            skills (and their synonyms) that would satisfy it via transfer.
-
-            Example (depth=1):
-              {
-                "information retrieval": frozenset({
-                    "recommendation systems", "recsys", "recommender systems",
-                    "nlp", "natural language processing", "search engineering",
-                    "learning to rank", "question answering", ...
-                }),
-                "ranking": frozenset({
-                    "recommendation systems", "recsys",
-                    "learning to rank", "ltr", ...
-                }),
-                ...
-              }
-        """
         if not jd_required_skills:
             logger.warning("build_jd_rescue_map: empty jd_required_skills")
             return {}
@@ -257,36 +162,12 @@ class SkillGraph:
         )
         return rescue_map
 
-    # ------------------------------------------------------------------ #
-    # Public API — single candidate scoring                                #
-    # ------------------------------------------------------------------ #
-
+    # Public API — single candidate scoring
     def score_candidate_skills(
         self,
         candidate_skill_names: frozenset[str],
         jd_rescue_map: dict[str, frozenset[str]],
     ) -> float:
-        """
-        Score a single candidate's skill set against the JD rescue map.
-
-        Scoring logic per JD required skill:
-          - Direct match  (skill ∈ candidate_skill_names) → 1.0
-          - Transfer match (candidate_skill_names ∩ rescue_sources ≠ ∅) →
-              base 0.5, +0.1 per additional hit, capped at 0.7
-          - No match                                       → 0.0
-
-        Final score = sum_of_coverages / total_jd_required_skills
-        This keeps scores in [0, 1] regardless of JD size.
-
-        Args:
-            candidate_skill_names: frozenset of lowercase skill names from
-                                   CandidateFeatureVector.skill_names_lower.
-            jd_rescue_map:         Output of build_jd_rescue_map().
-
-        Returns:
-            Float in [0.0, 1.0]. Higher = stronger domain-transfer alignment.
-            Returns 0.0 for empty inputs.
-        """
         if not jd_rescue_map or not candidate_skill_names:
             return 0.0
 
@@ -315,10 +196,7 @@ class SkillGraph:
 
         return min(1.0, coverage_sum / total)
 
-    # ------------------------------------------------------------------ #
-    # Public API — rank a pool of candidates (Path 3 entry point)         #
-    # ------------------------------------------------------------------ #
-
+    # Public API — rank a pool of candidates (Path 3 entry point)
     def rank_by_domain_transfer(
         self,
         candidate_skills_map: dict[str, frozenset[str]],
@@ -327,38 +205,6 @@ class SkillGraph:
         exclude_ids: Optional[set[str]] = None,
         bfs_depth: int = 1,
     ) -> list[tuple[str, float]]:
-        """
-        Score and rank all candidates by domain-transfer relevance to the JD.
-
-        This is the primary entry point called by retrieval/ontology_path.py.
-
-        Args:
-            candidate_skills_map: {candidate_id: frozenset[skill_names_lower]}
-                                  Typically built from the pre-loaded feature store
-                                  or all CandidateFeatureVector objects.
-            jd_required_skills:   Lowercase required skills from JDIntent.
-                                  Pass required_skills (not expanded_required) —
-                                  this function performs its own graph expansion.
-            top_k:                Number of candidates to return.
-                                  Defaults to config.ONTOLOGY_PATH_TOP_K (20).
-            exclude_ids:          Optional set of candidate_ids to skip.
-                                  Useful when testing for cross-path deduplication,
-                                  but Path 3 results are NOT pre-filtered in
-                                  practice — deduplication happens in rrf_fusion.py.
-            bfs_depth:            Passed to build_jd_rescue_map(). Default 1.
-
-        Returns:
-            List of (candidate_id, score) tuples, sorted by score descending,
-            length ≤ top_k.
-
-            Only candidates with score > 0.0 are included.
-            If fewer than top_k candidates have nonzero scores, returns all
-            nonzero-score candidates.
-
-        Raises:
-            TypeError:  If candidate_skills_map is not a dict.
-            ValueError: If top_k < 1.
-        """
         if not isinstance(candidate_skills_map, dict):
             raise TypeError(
                 f"candidate_skills_map must be dict, got {type(candidate_skills_map)}"
@@ -416,45 +262,20 @@ class SkillGraph:
 
         return result
 
-    # ------------------------------------------------------------------ #
-    # Introspection helpers                                                #
-    # ------------------------------------------------------------------ #
-
+    # Introspection helpers 
     def transfers_to(self, source_skill: str) -> list[str]:
-        """
-        Return the list of target skills that source_skill transfers into.
-
-        Example:
-            graph.transfers_to("recommendation systems")
-            → ["information retrieval", "search engineering", "ranking", ...]
-        """
         return sorted(self._forward.get(source_skill.lower().strip(), frozenset()))
 
     def transfer_sources_for(self, target_skill: str) -> list[str]:
-        """
-        Return the list of source skills that transfer into target_skill.
-
-        Example:
-            graph.transfer_sources_for("information retrieval")
-            → ["recommendation systems", "recsys", "nlp", ...]
-        """
         return sorted(self._reverse.get(target_skill.lower().strip(), frozenset()))
 
     def has_transfer_path(self, source_skill: str, target_skill: str) -> bool:
-        """
-        Return True if source_skill has a 1-hop transfer path to target_skill.
-
-        Example:
-            graph.has_transfer_path("recommendation systems", "information retrieval")
-            → True
-        """
         src = source_skill.lower().strip()
         tgt = target_skill.lower().strip()
         return tgt in self._forward.get(src, frozenset())
 
     @property
     def loaded(self) -> bool:
-        """True if skill_map.json was loaded successfully."""
         return self._loaded
 
     def __repr__(self) -> str:
@@ -468,20 +289,11 @@ class SkillGraph:
         )
 
 
-# --------------------------------------------------------------------------- #
-# Module-level convenience                                                     #
-# --------------------------------------------------------------------------- #
-
+# Module-level convenience 
 def build_rescue_map(
     jd_required_skills: list[str],
     skill_map_path: Optional[Path] = None,
     bfs_depth: int = 1,
 ) -> dict[str, frozenset[str]]:
-    """
-    One-shot helper: build a JD rescue map from required skills.
-
-    Creates a SkillGraph on each call. For repeated use (e.g. ranking loop),
-    instantiate SkillGraph once and call build_jd_rescue_map() directly.
-    """
     graph = SkillGraph(skill_map_path=skill_map_path)
     return graph.build_jd_rescue_map(jd_required_skills, bfs_depth=bfs_depth)

@@ -14,10 +14,7 @@ from pipeline.schemas import JDIntent, RetrievalResult
 
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Optional rank_bm25 import — clear error at retrieve() time if missing
-# ─────────────────────────────────────────────────────────────────────────────
-
 try:
     from rank_bm25 import BM25Okapi as _BM25Okapi   # type: ignore[import]
     _BM25_AVAILABLE = True
@@ -38,33 +35,8 @@ _MIN_BM25_SCORE: float = 1e-9
 _MAX_QUERY_TOKENS: int = 500
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # KeywordPath
-# ─────────────────────────────────────────────────────────────────────────────
-
 class KeywordPath:
-    """
-    BM25 sparse-retrieval path with ontology-expanded query (Path 2 of 5).
-
-    Typical production usage:
-        # Load once in runner.py at startup
-        path = KeywordPath.from_disk()
-
-        # Call once per JD inside the ranking loop
-        results = path.retrieve(jd_intent, top_k=25)
-
-    Unit-test usage (no real index needed):
-        from rank_bm25 import BM25Okapi
-        corpus = [
-            ["embeddings", "faiss", "python", "ranking"],
-            ["sales", "marketing", "excel"],
-            ["pinecone", "qdrant", "vector", "search", "python"],
-        ]
-        bm25 = BM25Okapi(corpus)
-        ids  = ["CAND_0000001", "CAND_0000002", "CAND_0000003"]
-        path = KeywordPath(bm25_model=bm25, candidate_ids=ids)
-        results = path.retrieve(jd_intent)
-    """
 
     PATH_NAME: str = "keyword"
 
@@ -76,27 +48,6 @@ class KeywordPath:
         query_expander: Optional[QueryExpander] = None,
         skill_map_path: Optional[Path] = None,
     ) -> None:
-        """
-        Initialise with either pre-loaded objects (for testing) or disk paths.
-
-        Args:
-            bm25_model:     Pre-loaded BM25Okapi instance. Takes priority
-                            over index_path when supplied.
-            candidate_ids:  List of CAND_XXXXXXX strings aligned with bm25
-                            corpus order. Required when bm25_model is given.
-            index_path:     Path to bm25.pkl.
-                            Defaults to config.BM25_INDEX_PATH.
-            query_expander: Pre-loaded QueryExpander instance. If None, one
-                            is built from skill_map_path.
-            skill_map_path: Path to skill_map.json.
-                            Defaults to config.SKILL_MAP_PATH.
-
-        Raises:
-            ValueError:        bm25_model supplied but candidate_ids is None.
-            ValueError:        len(bm25_model.corpus_size) != len(candidate_ids).
-            FileNotFoundError: index_path does not exist (raised lazily on
-                               first retrieve() when using disk path).
-        """
         self._index_path: Path = index_path or config.BM25_INDEX_PATH
         effective_map = skill_map_path or config.SKILL_MAP_PATH
 
@@ -125,10 +76,7 @@ class KeywordPath:
                 len(self._candidate_ids),
             )
 
-    # ------------------------------------------------------------------ #
-    # Factory — production path                                           #
-    # ------------------------------------------------------------------ #
-
+    # Factory — production path 
     @classmethod
     def from_disk(
         cls,
@@ -136,26 +84,6 @@ class KeywordPath:
         skill_map_path: Optional[Path] = None,
         query_expander: Optional[QueryExpander] = None,
     ) -> "KeywordPath":
-        """
-        Load BM25 index from bm25.pkl and return a ready instance.
-
-        Call once in pipeline/runner.py at startup; reuse the returned
-        instance across retrieve() calls to avoid repeated pickle I/O.
-
-        Args:
-            index_path:     Override for config.BM25_INDEX_PATH.
-            skill_map_path: Override for config.SKILL_MAP_PATH.
-            query_expander: Pre-built expander to share with other paths.
-
-        Returns:
-            Fully loaded KeywordPath instance.
-
-        Raises:
-            RuntimeError:      rank_bm25 not installed.
-            FileNotFoundError: bm25.pkl not found.
-            KeyError:          bm25.pkl missing required keys.
-            ValueError:        corpus / candidate_id size mismatch.
-        """
         instance = cls(
             index_path=index_path,
             skill_map_path=skill_map_path,
@@ -164,47 +92,12 @@ class KeywordPath:
         instance._ensure_loaded()
         return instance
 
-    # ------------------------------------------------------------------ #
-    # Primary retrieve method                                              #
-    # ------------------------------------------------------------------ #
-
+    # Primary retrieve method    
     def retrieve(
         self,
         jd_intent: JDIntent,
         top_k: int = config.KEYWORD_PATH_TOP_K,
     ) -> list[RetrievalResult]:
-        """
-        Score all candidates in the BM25 index against the expanded JD query.
-
-        Query construction:
-            Required skills → QueryExpander → synonyms + co-skills +
-            reverse domain-transfer sources → whitespace-tokenised flat list.
-
-        Scoring:
-            BM25Okapi.get_scores(query_tokens) → numpy array of TF-IDF
-            weighted BM25 scores for every candidate in the corpus.
-            Scores are normalised to [0, 1] by dividing by the maximum
-            score in the result set.
-
-        Args:
-            jd_intent: Parsed JD intent. Uses jd_intent.required_skills
-                       as the seed for query expansion.
-            top_k:     Maximum candidates to return.
-                       Defaults to config.KEYWORD_PATH_TOP_K (25).
-
-        Returns:
-            list[RetrievalResult] sorted by BM25 score descending,
-            length ≤ top_k. Candidates with zero BM25 score are excluded.
-
-            path_name    = "keyword"
-            path_score   ∈ [0.0, 1.0]  (normalised BM25 score)
-            rank_in_path = 1-indexed position in this path's results
-
-        Raises:
-            RuntimeError:  rank_bm25 not installed.
-            ValueError:    top_k < 1.
-            ValueError:    jd_intent.required_skills is empty.
-        """
         self._assert_bm25_available()
         self._ensure_loaded()
 
@@ -259,28 +152,8 @@ class KeywordPath:
         )
         return results
 
-    # ------------------------------------------------------------------ #
-    # Query building                                                       #
-    # ------------------------------------------------------------------ #
-
+    # Query building    
     def _build_query_tokens(self, jd_intent: JDIntent) -> list[str]:
-        """
-        Build BM25 query tokens from JD required skills.
-
-        Strategy:
-          1. Expand required skills via QueryExpander with full options:
-               - synonyms (bidirectional near-equivalents)
-               - co-skills (commonly paired skills)
-               - reverse domain-transfer sources (for Tier-5 recall:
-                 "recommendation systems" found when JD needs "information
-                 retrieval")
-          2. Also add nice-to-have skill tokens for supplementary coverage
-             (without co-skill expansion to avoid excessive noise).
-          3. Deduplicate and cap at _MAX_QUERY_TOKENS.
-
-        Returns:
-            Flat list of lowercase string tokens for BM25Okapi.get_scores().
-        """
         # Primary: required skills with full expansion
         primary_tokens: list[str] = self._expander.build_query_tokens(
             jd_intent.required_skills,
@@ -313,30 +186,12 @@ class KeywordPath:
 
         return merged
 
-    # ------------------------------------------------------------------ #
-    # Result building                                                      #
-    # ------------------------------------------------------------------ #
-
+    # Result building
     def _build_results(
         self,
         scores: np.ndarray,
         top_k: int,
     ) -> list[RetrievalResult]:
-        """
-        Convert raw BM25 score array into sorted, normalised RetrievalResult list.
-
-        Score normalisation: divide all scores by the maximum score so that
-        the top result always has path_score = 1.0. Candidates with score
-        <= _MIN_BM25_SCORE (effectively zero) are excluded entirely —
-        they had no BM25 vocabulary overlap with the query.
-
-        Args:
-            scores:  numpy array shape (N,) of raw BM25 scores.
-            top_k:   Maximum results to return.
-
-        Returns:
-            list[RetrievalResult] sorted by score descending, len <= top_k.
-        """
         if len(scores) == 0:
             return []
 
@@ -391,12 +246,8 @@ class KeywordPath:
 
         return results
 
-    # ------------------------------------------------------------------ #
-    # Internal loading                                                     #
-    # ------------------------------------------------------------------ #
-
+    # Internal loading  
     def _ensure_loaded(self) -> None:
-        """Load BM25 index from disk if not already loaded."""
         if self._loaded:
             return
         self._assert_bm25_available()
@@ -412,26 +263,6 @@ class KeywordPath:
 
     @staticmethod
     def _load_bm25_index(path: Path) -> tuple[object, list[str]]:
-        """
-        Load and validate the BM25 index pickle.
-
-        Expected pickle structure (produced by indexing/bm25_builder.py):
-            {
-                "bm25":          BM25Okapi   — trained model
-                "candidate_ids": list[str]   — CAND_XXXXXXX, aligned with corpus
-                "corpus_size":   int         — validation count (optional)
-            }
-
-        Security note: pickle.load is inherently unsafe with untrusted files.
-        This file is written by our own pipeline (bm25_builder.py) and read
-        back in a controlled environment, so the risk is acceptable.
-
-        Raises:
-            FileNotFoundError: bm25.pkl not found at path.
-            KeyError:          Pickle missing "bm25" or "candidate_ids" keys.
-            ValueError:        candidate_ids contains invalid ID format.
-            RuntimeError:      Pickle deserialization failed.
-        """
         if not path.exists():
             raise FileNotFoundError(
                 f"BM25 index not found: '{path}'. "
@@ -491,15 +322,6 @@ class KeywordPath:
         return bm25_model, candidate_ids
 
     def _validate_alignment(self) -> None:
-        """
-        Verify that corpus size matches candidate_ids length.
-
-        BM25Okapi stores corpus_size as an attribute. The candidate_ids list
-        must be the same length, or index lookups will be incorrect.
-
-        Raises:
-            ValueError: Size mismatch between BM25 corpus and candidate_ids.
-        """
         if self._bm25 is None or not self._candidate_ids:
             return
 
@@ -515,10 +337,7 @@ class KeywordPath:
                 "Re-run precompute.py to rebuild aligned indexes."
             )
 
-    # ------------------------------------------------------------------ #
-    # Assertion helpers                                                    #
-    # ------------------------------------------------------------------ #
-
+    # Assertion helpers
     @staticmethod
     def _assert_bm25_available() -> None:
         if not _BM25_AVAILABLE:
@@ -527,18 +346,13 @@ class KeywordPath:
                 "Run: pip install rank-bm25==0.2.2"
             )
 
-    # ------------------------------------------------------------------ #
-    # Properties                                                           #
-    # ------------------------------------------------------------------ #
-
+    # Properties 
     @property
     def loaded(self) -> bool:
-        """True if BM25 model and candidate IDs are ready for queries."""
         return self._loaded
 
     @property
     def corpus_size(self) -> int:
-        """Number of candidates in the BM25 corpus (0 if not loaded)."""
         return len(self._candidate_ids) if self._loaded else 0
 
     def __repr__(self) -> str:
@@ -549,33 +363,14 @@ class KeywordPath:
         return f"KeywordPath({status})"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Module-level convenience
-# ─────────────────────────────────────────────────────────────────────────────
-
 def retrieve_keyword(
     jd_intent: JDIntent,
     top_k: int = config.KEYWORD_PATH_TOP_K,
     index_path: Optional[Path] = None,
     skill_map_path: Optional[Path] = None,
 ) -> list[RetrievalResult]:
-    """
-    One-shot convenience: load BM25 index and retrieve top-K candidates.
-
-    Creates a new KeywordPath on each call (incurs pickle I/O).
-    For repeated calls, use KeywordPath.from_disk() once and reuse.
-
-    Args:
-        jd_intent:      Parsed JDIntent (required_skills must be populated).
-        top_k:          Number of results to return.
-        index_path:     Override for config.BM25_INDEX_PATH.
-        skill_map_path: Override for config.SKILL_MAP_PATH.
-
-    Returns:
-        list[RetrievalResult] sorted by BM25 score descending.
-    """
     path = KeywordPath.from_disk(
         index_path=index_path, skill_map_path=skill_map_path
     )
     return path.retrieve(jd_intent, top_k=top_k)
-

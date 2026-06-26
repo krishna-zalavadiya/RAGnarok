@@ -9,10 +9,7 @@ from pipeline.schemas import RetrievalResult, RRFResult
 
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Path bonus lookup — built once at import time from config constants
-# ─────────────────────────────────────────────────────────────────────────────
-
+# Path bonus lookup — built once at import time from config constant
 # Maps each retrieval path's PATH_NAME → RRF score multiplier.
 # Paths not present in this dict default to 1.0.
 _PATH_BONUS: dict[str, float] = {
@@ -24,39 +21,13 @@ _PATH_BONUS: dict[str, float] = {
 }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # RRFFusion
-# ─────────────────────────────────────────────────────────────────────────────
-
 class RRFFusion:
-    """
-    Merges results from up to 5 retrieval paths using Reciprocal Rank Fusion.
-
-    Usage in pipeline/runner.py:
-        fusion = RRFFusion()
-
-        pool: list[RRFResult] = fusion.fuse({
-            "semantic":   semantic_results,
-            "keyword":    keyword_results,
-            "ontology":   ontology_results,
-            "trajectory": trajectory_results,
-            "signal":     signal_results,
-        })
-        # pool has ≤ 60 deduplicated RRFResult objects, sorted by rrf_score desc
-    """
-
     def __init__(
         self,
         rrf_k:     int = config.RRF_K,
         pool_size: int = config.RRF_POOL_SIZE,
     ) -> None:
-        """
-        Args:
-            rrf_k:     Smoothing constant in the denominator (default 60).
-                       Higher values reduce the impact of rank differences.
-            pool_size: Maximum candidates to return after fusion
-                       (default config.RRF_POOL_SIZE = 60).
-        """
         if rrf_k < 1:
             raise ValueError(f"rrf_k must be >= 1, got {rrf_k}.")
         if pool_size < 1:
@@ -72,35 +43,11 @@ class RRFFusion:
             {k: v for k, v in _PATH_BONUS.items() if v != 1.0},
         )
 
-    # ------------------------------------------------------------------ #
-    # Primary fuse method                                                  #
-    # ------------------------------------------------------------------ #
-
+    # Primary fuse method 
     def fuse(
         self,
         path_results: dict[str, list[RetrievalResult]],
     ) -> list[RRFResult]:
-        """
-        Merge retrieval results from multiple paths into a single ranked pool.
-
-        Args:
-            path_results: Dict mapping path name → list of RetrievalResult.
-                          Keys must match PATH_NAME constants on each path class:
-                          "semantic", "keyword", "ontology", "trajectory", "signal".
-                          Missing or empty paths are silently skipped — you do
-                          NOT need all 5 paths to be present.
-
-        Returns:
-            list[RRFResult] of length ≤ pool_size, sorted by rrf_score
-            descending with candidate_id ascending as a tie-breaker.
-
-            rrf_score        = Σ_path  bonus(path) / (rrf_k + rank_in_path)
-            paths_present    = sorted list of path names where candidate appeared
-            cross_encoder_score = 0.0  (populated by scoring/cross_encoder.py)
-
-        Raises:
-            TypeError:  path_results is not a dict.
-        """
         if not isinstance(path_results, dict):
             raise TypeError(
                 f"path_results must be dict[str, list[RetrievalResult]], "
@@ -216,29 +163,12 @@ class RRFFusion:
 
         return pool
 
-    # ------------------------------------------------------------------ #
-    # Introspection helpers                                                #
-    # ------------------------------------------------------------------ #
-
+    # Introspection helpers 
     def score_breakdown(
         self,
         candidate_id: str,
         path_results: dict[str, list[RetrievalResult]],
     ) -> dict[str, float]:
-        """
-        Return per-path RRF contribution for a single candidate.
-
-        Useful for debugging why a candidate did or did not make the pool.
-
-        Args:
-            candidate_id: CAND_XXXXXXX string.
-            path_results: Same dict passed to fuse().
-
-        Returns:
-            Dict mapping path_name → RRF contribution for this candidate.
-            0.0 for paths where the candidate did not appear.
-            "total" key contains the sum.
-        """
         breakdown: dict[str, float] = {}
 
         for path_name, results in path_results.items():
@@ -261,10 +191,7 @@ class RRFFusion:
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Module-level convenience — named-parameter interface for runner.py
-# ─────────────────────────────────────────────────────────────────────────────
-
 def fuse_results(
     semantic:   Optional[list[RetrievalResult]] = None,
     keyword:    Optional[list[RetrievalResult]] = None,
@@ -274,24 +201,6 @@ def fuse_results(
     rrf_k:      int = config.RRF_K,
     pool_size:  int = config.RRF_POOL_SIZE,
 ) -> list[RRFResult]:
-    """
-    Named-parameter convenience wrapper for pipeline/runner.py.
-
-    Each path is optional — pass only the paths that ran successfully.
-    Absent paths (None or empty list) are silently skipped.
-
-    Args:
-        semantic:   Results from retrieval/semantic_path.py.
-        keyword:    Results from retrieval/keyword_path.py.
-        ontology:   Results from retrieval/ontology_path.py.
-        trajectory: Results from retrieval/trajectory_path.py.
-        signal:     Results from retrieval/signal_path.py.
-        rrf_k:      RRF smoothing constant (default config.RRF_K = 60).
-        pool_size:  Output pool size (default config.RRF_POOL_SIZE = 60).
-
-    Returns:
-        list[RRFResult] of length ≤ pool_size, sorted by rrf_score desc.
-    """
     path_results: dict[str, list[RetrievalResult]] = {}
 
     if semantic:   path_results["semantic"]   = semantic
@@ -301,4 +210,3 @@ def fuse_results(
     if signal:     path_results["signal"]     = signal
 
     return RRFFusion(rrf_k=rrf_k, pool_size=pool_size).fuse(path_results)
-

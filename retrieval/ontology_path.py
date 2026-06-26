@@ -13,44 +13,6 @@ logger = logging.getLogger(__name__)
 
 
 class OntologyPath:
-    """
-    Ontology graph domain-transfer retrieval path (Path 3 of 5).
-
-    Scores all candidates by how well their skills map into JD required skills
-    via the domain-transfer edges in skill_map.json:
-
-        "recommendation systems" → "information retrieval"
-        "nlp"                    → "information retrieval"
-        "search engineering"     → "ranking"
-        …
-
-    A candidate is rescued when they have source-domain skills whose
-    domain-transfer edges point to at least one JD required skill.
-
-    Typical production usage (pipeline/runner.py):
-
-        # Build once at startup from skill_map.json
-        path = OntologyPath()
-
-        # Build candidate skills map once from all feature vectors
-        skills_map = OntologyPath.build_skills_map(all_feature_vectors)
-
-        # Retrieve top-20 domain-transfer candidates per JD
-        results = path.retrieve(jd_intent, candidate_skills_map=skills_map)
-
-    Unit-test usage (no runner infrastructure needed):
-
-        graph = SkillGraph(skill_map_path)
-        path  = OntologyPath(skill_graph=graph)
-        results = path.retrieve(
-            jd_intent,
-            candidate_skills_map={
-                "CAND_0000001": frozenset({"recommendation systems", "python"}),
-                "CAND_0000002": frozenset({"marketing", "excel"}),
-            },
-        )
-    """
-
     PATH_NAME: str = "ontology"
 
     def __init__(
@@ -58,22 +20,6 @@ class OntologyPath:
         skill_graph: Optional[SkillGraph] = None,
         skill_map_path: Optional[Path] = None,
     ) -> None:
-        """
-        Initialise the ontology path.
-
-        Args:
-            skill_graph:    Pre-loaded SkillGraph. Takes priority over
-                            skill_map_path when supplied. Pass a pre-built
-                            instance to share it across paths in runner.py
-                            and avoid loading skill_map.json twice.
-            skill_map_path: Path to skill_map.json.
-                            Defaults to config.SKILL_MAP_PATH.
-                            Ignored when skill_graph is supplied.
-
-        Raises:
-            FileNotFoundError: skill_map.json not found at resolved path
-                               (raised by SkillGraph.__init__).
-        """
         if skill_graph is not None:
             self._graph: SkillGraph = skill_graph
         else:
@@ -82,34 +28,16 @@ class OntologyPath:
 
         logger.info("OntologyPath initialised — %r", self._graph)
 
-    # ------------------------------------------------------------------ #
-    # Factory                                                              #
-    # ------------------------------------------------------------------ #
-
+   
+    # Factory
     @classmethod
     def from_skill_map(
         cls,
         skill_map_path: Optional[Path] = None,
     ) -> "OntologyPath":
-        """
-        Named constructor: build from a skill_map.json path.
-
-        Equivalent to OntologyPath(skill_map_path=…) but reads more
-        clearly in runner.py alongside SemanticPath.from_disk() and
-        KeywordPath.from_disk().
-
-        Args:
-            skill_map_path: Override for config.SKILL_MAP_PATH.
-
-        Returns:
-            Ready OntologyPath instance.
-        """
         return cls(skill_map_path=skill_map_path)
 
-    # ------------------------------------------------------------------ #
-    # Primary retrieve method                                              #
-    # ------------------------------------------------------------------ #
-
+    # Primary retrieve method
     def retrieve(
         self,
         jd_intent: JDIntent,
@@ -118,44 +46,6 @@ class OntologyPath:
         exclude_ids: Optional[set[str]] = None,
         bfs_depth: int = 1,
     ) -> list[RetrievalResult]:
-        """
-        Score all candidates by domain-transfer alignment with JD required skills.
-
-        Unlike Paths 1 (FAISS) and 2 (BM25), this path must iterate the
-        entire candidate pool — there is no pre-built ANN or inverted index.
-        This is fast in practice (O(N × K) set intersections where K = ~20
-        required skills) and runs in < 200 ms for 100 K candidates.
-
-        Args:
-            jd_intent:            Parsed JDIntent. Uses required_skills as
-                                  the BFS seed — NOT expanded_required.
-                                  The graph performs its own ontology expansion
-                                  via the domain_transfers section.
-            candidate_skills_map: {candidate_id: frozenset[skill_names_lower]}
-                                  Built with OntologyPath.build_skills_map().
-                                  All candidates to score must be present here.
-            top_k:                Maximum results to return.
-                                  Defaults to config.ONTOLOGY_PATH_TOP_K (20).
-            exclude_ids:          Optional set of candidate_ids to skip.
-                                  NOTE: Do NOT pre-filter here. Deduplication
-                                  is handled by rrf_fusion.py. This param is
-                                  provided for testing cross-path recall only.
-            bfs_depth:            BFS depth passed to SkillGraph. Default 1
-                                  (direct domain transfers). Depth 2 adds
-                                  indirect transfers but increases noise.
-
-        Returns:
-            list[RetrievalResult] sorted by domain-transfer score descending,
-            length ≤ top_k. Only candidates with score > 0.0 are included.
-
-            path_name    = "ontology"
-            path_score   ∈ (0.0, 1.0]  (from SkillGraph.score_candidate_skills)
-            rank_in_path = 1-indexed position in this path's results
-
-        Raises:
-            ValueError: top_k < 1.
-            TypeError:  candidate_skills_map is not a dict.
-        """
         if top_k < 1:
             raise ValueError(f"top_k must be >= 1, got {top_k}.")
 
@@ -215,33 +105,13 @@ class OntologyPath:
 
         return results
 
-    # ------------------------------------------------------------------ #
-    # Single-candidate scoring (testing / debugging)                      #
-    # ------------------------------------------------------------------ #
-
+    # Single-candidate scoring (testing / debugging) 
     def score_single(
         self,
         candidate_skills: frozenset[str],
         jd_intent: JDIntent,
         bfs_depth: int = 1,
     ) -> float:
-        """
-        Score a single candidate's skill set against the JD.
-
-        Useful for:
-          - Unit tests verifying specific candidates are rescued
-          - Debugging why a candidate was or was not retrieved
-          - Smoke tests validating the domain-transfer graph
-
-        Args:
-            candidate_skills: frozenset of lowercase skill names.
-                              Typically CandidateFeatureVector.skill_names_lower.
-            jd_intent:        Parsed JDIntent (uses required_skills).
-            bfs_depth:        BFS depth for rescue map. Default 1.
-
-        Returns:
-            Float in [0.0, 1.0]. 0.0 means no domain-transfer alignment.
-        """
         if not jd_intent.required_skills:
             return 0.0
         rescue_map = self._graph.build_jd_rescue_map(
@@ -249,60 +119,23 @@ class OntologyPath:
         )
         return self._graph.score_candidate_skills(candidate_skills, rescue_map)
 
-    # ------------------------------------------------------------------ #
-    # Static helper — used by pipeline/runner.py                          #
-    # ------------------------------------------------------------------ #
-
+    # Static helper — used by pipeline/runner.py 
     @staticmethod
     def build_skills_map(
         feature_vectors: list[CandidateFeatureVector],
     ) -> dict[str, frozenset[str]]:
-        """
-        Build the candidate_skills_map from parsed CandidateFeatureVector objects.
-
-        This is the expected integration point in pipeline/runner.py:
-
-            all_fvecs = candidate_parser.parse_all(candidates_path)
-            skills_map = OntologyPath.build_skills_map(all_fvecs)
-            results = ontology_path.retrieve(jd_intent, skills_map)
-
-        Args:
-            feature_vectors: All CandidateFeatureVector objects loaded for
-                             this ranking run (100 K at full scale).
-
-        Returns:
-            {candidate_id: frozenset[skill_names_lower]} — skill_names_lower
-            is pre-built on CandidateFeatureVector for O(1) lookup.
-        """
         return {
             fv.candidate_id: fv.skill_names_lower
             for fv in feature_vectors
         }
 
-    # ------------------------------------------------------------------ #
-    # Introspection                                                        #
-    # ------------------------------------------------------------------ #
-
+    # Introspection
     def explain_candidate(
         self,
         candidate_id: str,
         candidate_skills: frozenset[str],
         jd_intent: JDIntent,
     ) -> dict[str, object]:
-        """
-        Return a human-readable explanation of why a candidate was (or was not)
-        rescued by the ontology path.
-
-        Used by trust/advocate.py and ui/components/score_breakdown.py to
-        surface domain-transfer matches in the recruiter-facing UI.
-
-        Returns:
-            dict with keys:
-                "score":            float domain-transfer score
-                "matched_via":      list[str] source skills that transferred in
-                "covered_jd_skills":list[str] JD required skills covered
-                "rescue_sources":   dict[str, list[str]] full rescue map
-        """
         if not jd_intent.required_skills:
             return {
                 "score": 0.0,
@@ -339,31 +172,13 @@ class OntologyPath:
         return f"OntologyPath(graph={self._graph!r})"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Module-level convenience
-# ─────────────────────────────────────────────────────────────────────────────
-
 def retrieve_ontology(
     jd_intent: JDIntent,
     candidate_skills_map: dict[str, frozenset[str]],
     top_k: int = config.ONTOLOGY_PATH_TOP_K,
     skill_map_path: Optional[Path] = None,
 ) -> list[RetrievalResult]:
-    """
-    One-shot convenience: build OntologyPath and retrieve top-K candidates.
-
-    Creates a new OntologyPath (and SkillGraph) on each call.
-    For repeated calls, use OntologyPath.from_skill_map() once and reuse.
-
-    Args:
-        jd_intent:            Parsed JDIntent with required_skills populated.
-        candidate_skills_map: {candidate_id: frozenset[skill_names_lower]}.
-        top_k:                Number of results to return.
-        skill_map_path:       Override for config.SKILL_MAP_PATH.
-
-    Returns:
-        list[RetrievalResult] sorted by domain-transfer score descending.
-    """
     path = OntologyPath.from_skill_map(skill_map_path=skill_map_path)
     return path.retrieve(jd_intent, candidate_skills_map, top_k=top_k)
 
