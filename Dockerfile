@@ -55,3 +55,15 @@ CMD ["python", "rank.py", \
      "--input", "data/candidates.jsonl", \
      "--output", "output/submission.csv", \
      "--top-k", "100"]
+
+#      # 1. Pull the image
+# docker pull yourusername/ragnarok:v1
+
+# # 2. Place their candidates.jsonl in current directory
+# # then run:
+# docker run \
+#   -v $(pwd)/candidates.jsonl:/app/data/candidates.jsonl \
+#   -v $(pwd)/output:/app/output \
+#   yourusername/ragnarok:v1
+
+# # 3. Output appears in ./output/submission.csv
