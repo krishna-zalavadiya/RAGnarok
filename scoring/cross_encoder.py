@@ -295,11 +295,17 @@ class CrossEncoderReranker:
 
             torch.set_num_threads(3)
 
+            n_batches = math.ceil(len(pairs) / 16)
+            logger.info(
+                "CrossEncoder: scoring %d pairs in %d batches (batch_size=16) …",
+                len(pairs), n_batches,
+            )
+
             raw_scores: np.ndarray = self._model.predict(
                 sentences=pairs,
                 batch_size=16,
-                show_progress_bar=True,    
-                convert_to_numpy=True,      
+                show_progress_bar=False,
+                convert_to_numpy=True,
             )
 
         except Exception as exc:

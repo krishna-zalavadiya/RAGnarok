@@ -87,9 +87,7 @@ LLM_WEIGHT: float = 0.3
 # LLM justification: only generate LLM briefs for this many top candidates.
 # Candidates ranked below this threshold keep the rule-based reasoning_generator
 # output (which is already signal-grounded and high quality).
-# 60 covers the full ELITE+STRONG+MID tiers; WEAK tier (61-100) uses rule-based.
-# Lower this value (e.g. 30) to trade justification coverage for faster runtime.
-LLM_RERANKER_TOP_N: int = 50
+LLM_RERANKER_TOP_N: int = 55
 
 # Final submission size (spec requirement).
 SUBMISSION_TOP_K: int = 100

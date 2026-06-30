@@ -343,7 +343,7 @@ def _pool_infer(task: tuple) -> tuple[str, str]:
     try:
         out = _worker_llm.create_chat_completion(
             messages=messages,
-            temperature=0.3,
+            temperature=0.2,
             max_tokens=85,
             repeat_penalty=1.15,   # suppress repetition loops in small models
             stop=["\n\n", "Sentence 3", "3.", "\nJob:"],
