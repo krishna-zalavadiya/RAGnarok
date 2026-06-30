@@ -1,0 +1,42 @@
+# ── Python artifacts ───────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# ── Virtual environments ───────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── Version control ────────────────────────────────────────────────
+.git/
+.gitignore
+
+# ── Large data files — NOT baked into the image, mounted at runtime ──
+data/candidates.jsonl
+data/sample_candidates.json
+data/*.jsonl
+data/*.jsonl.gz
+
+# ── Output / logs ──────────────────────────────────────────────────
+output/
+*.log
+
+# ── OS / editor junk ────────────────────────────────────────────────
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# ── Tests (not needed inside the runtime image) ────────────────────
+tests/
+
+# ── Docs not needed at runtime ──────────────────────────────────────
+README.md
+project_structure.md
+LICENSE
