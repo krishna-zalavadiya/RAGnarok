@@ -181,56 +181,155 @@ Rather than generating uniform praise for every candidate, the trust layer runs 
 
 ## Setup & Installation
 
-**Requirements:** Python 3.10+, CPU only, ≤ 16 GB RAM(16 GB RAM preferred).
+> **For Hackathon Judges** — Follow every step in order. Estimated setup time: **10–15 minutes** (plus model download time on first run).
 
-### 1. Clone and install dependencies
+**System Requirements:**
+- Python **3.10 or higher**
+- CPU only — no GPU required
+- **16 GB RAM 8 core** recommended
+- ~5 GB free disk space (indexes + models)
+
+---
+
+### Step 1 — Clone the repository
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/ragnarok.git
-cd ragnarok
+git clone https://github.com/Krishna-Noutiyal/RAGnarok.git
+cd RAGnarok
+```
+
+---
+
+### Step 2 — Create a Python virtual environment Python version 3.11.2
+
+Creating an isolated environment prevents dependency conflicts with your system Python.
+
+**On macOS / Linux:**
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+**On Windows (PowerShell):**
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+```
+
+**On Windows (Command Prompt):**
+```cmd
+python -m venv .venv
+.venv\Scripts\activate.bat
+```
+
+> After activation your prompt will show `(.venv)` at the beginning. All subsequent commands must be run inside this activated environment.
+
+---
+
+### Step 3 — Install Python dependencies
+
+```bash
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 2. Download language models (once, requires network)
+> This installs all pinned packages including `torch` (CPU), `faiss-cpu`, `sentence-transformers`, `rank-bm25`, `spacy`, and `llama-cpp-python`. Installation may take 3–5 minutes depending on your connection.
+
+---
+
+### Step 4 — Download language models *(requires internet, run once)*
 
 ```bash
-# spaCy model for JD parsing
+# spaCy English model for JD parsing
 python -m spacy download en_core_web_sm
 
-# Sentence-transformers models (bi-encoder + cross-encoder)
+# Bi-encoder + cross-encoder models (cached to ~/.cache/huggingface/)
 python -c "
 from sentence_transformers import SentenceTransformer, CrossEncoder
 SentenceTransformer('all-MiniLM-L6-v2')
 CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+print('Models downloaded successfully.')
 "
 
-python precompute_llm_addition.py
+# Qwen2.5-1.5B LLM in GGUF format (saved to models/)
+python precompute_llm.py
 ```
-Models are cached in `~/.cache/huggingface/` after first download. During ranking (no-network window), they load from cache.
 
+> Models are cached after first download. The ranking phase itself is fully **offline** — no network calls are made during `rank.py`.
 
-### 3. Place your data
+---
+
+### Step 5 — Place the candidate dataset
+
+Copy the hackathon-provided `candidates.jsonl` file into the `data/` directory:
 
 ```bash
-# Full dataset (from hackathon bundle)
+# macOS / Linux
 cp /path/to/candidates.jsonl data/candidates.jsonl
 
-# Job description is already in the repo
-ls job_description.md
+# Windows PowerShell
+Copy-Item "C:\path\to\candidates.jsonl" -Destination "data\candidates.jsonl"
 ```
 
-### 4. Mount the precomputed indeses from google drive or precompute them locally.
+The job description (`job_description.md`) is already committed in the repository — no action needed.
 
-Google-Drive Link : [https://drive.google.com/drive/folders/1TwEprdrDkvJUufSJXA8ZnPxSTYVYQUDd?usp=drive_link](https://drive.google.com/drive/folders/1TwEprdrDkvJUufSJXA8ZnPxSTYVYQUDd?usp=drive_link)
-Place them in the ```/data/indexes``` folder.
+---
 
-OR
+### Step 6 — Obtain the pre-built indexes
 
-Precompute them locally
- 
+You have **two options**. Option A is strongly recommended for judges to save time.
+
+#### ✅ Option A — Download precomputed indexes from Google Drive *(recommended)*
+
+Download the entire `indexes/` folder from the link below and place its contents inside `data/indexes/`:
+
+> **📂 Google Drive:** [https://drive.google.com/drive/folders/1TwEprdrDkvJUufSJXA8ZnPxSTYVYQUDd?usp=drive_link](https://drive.google.com/drive/folders/1TwEprdrDkvJUufSJXA8ZnPxSTYVYQUDd?usp=drive_link)
+
+After downloading, your directory should look like this:
+
+```
+data/
+├── candidates.jsonl        ← from hackathon bundle (Step 5)
+└── indexes/                ← downloaded from Google Drive
+    ├── faiss.index
+    ├── bm25.pkl
+    ├── candidate_ids.npy
+    ├── features_ids.npy
+    ├── features.npy
+    ├── trajectory.npy
+    ├── trajectory_ids.npy
+    └── honeypots.pkl
+```
+
+Verify the files are in place:
+
 ```bash
-python -m build_indexes
+# macOS / Linux
+ls -lh data/indexes/
+
+# Windows PowerShell
+Get-ChildItem data\indexes\
 ```
+
+---
+
+#### 🔧 Option B — Build indexes locally *(takes 40-50 minutes)*
+
+If you prefer to reproduce the indexes from scratch using the raw candidate data:
+
+```bash
+python build_indexes.py
+```
+
+This will:
+1. Parse all 100 000 candidate profiles
+2. Build the FAISS IVF256 dense vector index
+3. Build the BM25 inverted index with ontology expansion
+4. Compute behavioural feature vectors
+5. Build the career trajectory index
+6. Flag honeypot candidates
+
+All artifacts are saved to `data/indexes/` automatically.
 
 ---
 
@@ -238,28 +337,11 @@ python -m build_indexes
 
 **One command to produce `output/submission.csv`** (after pre-computation):
 
-```bash
-python rank.py
-```
-
 With explicit paths:
 
 ```bash
-python rank.py \
-  --input data/candidates.jsonl \
-  --output output/submission.csv \
-  --top-k 100
+.venv\Scripts\python.exe rank.py --input data/candidates.jsonl --output output/submission.csv --top-k 100
 ```
-
-
-
-Validating Output:
-
-```bash
-python scripts/validate_output.py output/submission.csv
-```
-
----
 
 ## Two-Phase Execution
 
@@ -270,7 +352,7 @@ RAGnarok is explicitly designed as a two-phase system. The 5-minute ranking cons
 Builds all indexes from the raw candidate pool. This step can take longer than 5 minutes and requires network access to download models on first run.
 
 ```bash
-python precompute.py --candidates data/candidates.jsonl
+python build_indexes.py
 ```
 
 What this builds (saved to `data/indexes/`):
@@ -287,7 +369,7 @@ What this builds (saved to `data/indexes/`):
 ### Phase 2 — Ranking (≤ 5 minutes, no network)
 
 ```bash
-python rank.py --input data/candidates.jsonl --output output/submission.csv
+.venv\Scripts\python.exe rank.py --input data/candidates.jsonl --output output/submission.csv --top-k 100
 ```
 
 All indexes load from disk. No API calls. Runs fully offline.
@@ -501,15 +583,8 @@ Before uploading to the portal, verify each item:
 - [ ] `submission_metadata.yaml` is filled in at repo root
 - [ ] Sandbox / demo link is live and accepts a small candidate sample
 
-Run the local validator:
 
-```bash
-python scripts/validate_output.py output/submission.csv
-```
-
----
-
-## LLM Reranker
+## LLM Reasoning
 
 RAGnarok includes a lightweight local LLM scoring stage (`scoring/llm_reranker.py`) that runs after RRF fusion on the top-300 candidates. It uses `Qwen2.5-1.5B-Instruct` in 4-bit quantised GGUF format via `llama-cpp-python` — no GPU, no network, ~1 GB RAM.
 
@@ -522,10 +597,13 @@ RRF pool (top-150)
 Cross-Encoder (top-120)       ~10s
        │
        ▼
-LLM Reranker  (top-300)       ~75s   ← new stage
-       │
-       ▼
 Composite Scorer
+       |
+       ▼
+LLM Reasoning
+       |
+       ▼
+output/submission.csv
 ```
 
 
