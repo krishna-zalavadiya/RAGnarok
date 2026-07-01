@@ -1,7 +1,7 @@
 # RAGnarok 
 ### Intelligent Candidate Ranking System · Redrob Hackathon
 
-> **A five-path hybrid retrieval + cross-encoder reranking pipeline that ranks 100,000 candidates against a job description in under 60 seconds on CPU — with no network, no GPU, and an adversarial trust layer that generates honest, falsifiable reasoning for every ranked candidate.**
+> **A five-path hybrid retrieval + cross-encoder reranking pipeline that ranks 100,000 candidates against a job description in under 5 minutes on CPU — with no network, no GPU, and an adversarial trust layer that generates honest, falsifiable reasoning for every ranked candidate.**
 
 ---
 
