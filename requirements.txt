@@ -7,8 +7,11 @@
 # POST-INSTALL STEPS (run once):
 #   1. python -m spacy download en_core_web_sm
 #   2. python precompute_llm.py        # downloads GGUF model
-#   3. python precompute.py            # builds FAISS / BM25 / feature indexes
+#   3. python build_indexes.py         # builds FAISS / BM25 / feature indexes
 # ─────────────────────────────────────────────────────────────────────────────
+
+# PyTorch CPU-only wheel index — must be declared here for `pip install -r` to work
+--extra-index-url https://download.pytorch.org/whl/cpu
 
 # ── Core ML / NLP ─────────────────────────────────────────────────────────────
 
@@ -16,7 +19,7 @@
 sentence-transformers==3.4.1
 
 # PyTorch CPU-only build — must install before sentence-transformers
-torch==2.5.1+cpu --extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
 
 # HuggingFace Transformers — sentence-transformers dependency
 transformers==4.47.1
@@ -48,15 +51,15 @@ numpy==1.26.4
 # ── Fast JSON ─────────────────────────────────────────────────────────────────
 
 # orjson — fast streaming JSON/JSONL parsing in rank.py
-orjson==3.10.18
+orjson==3.11.9
 
 # ── LLM Reranker ─────────────────────────────────────────────────────────────
 
 # llama-cpp-python — CPU inference for Qwen2.5 GGUF model
-llama-cpp-python==0.3.2
+llama-cpp-python==0.3.31
 
 # huggingface-hub — GGUF model download in precompute_llm.py
-huggingface-hub==0.24.0
+huggingface-hub==0.36.2
 
 # ── Progress ─────────────────────────────────────────────────────────────────
 

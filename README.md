@@ -57,7 +57,7 @@ job_description.md   ──┘       Candidate Parser · JD Parser · Ontology B
                             Cross-Encoder Rerank
                                         │
                                         ▼
-                         Composite Scorer (0.40 · 0.35 · 0.25)
+                         Composite Scorer (0.40 · 0.30 · 0.20 · 0.10)
                                         │
                                         ▼
                          Adversarial Trust Layer
@@ -106,9 +106,9 @@ Rather than generating uniform praise for every candidate, the trust layer runs 
 .
 ├── config.py                   # All constants — never hardcode elsewhere
 ├── rank.py                     # CLI entry point → produces submission.csv
-├── precompute.py               # Offline index builder (run once)
+├── precompute.py               # index builder helper
 ├── precompute_llm.py           # Offline LLM downaloader (run once)
-├── build_indexes.py            # Low-level index build helper
+├── build_indexes.py            # Index builder helper
 ├── job_description.md          # The target JD
 ├── parsed_job_description.json # Cached JD parse output
 ├── submission_metadata.yaml    # Hackathon submission metadata
@@ -156,24 +156,16 @@ Rather than generating uniform praise for every candidate, the trust layer runs 
 │   ├── verdict.py              # Synthesises ROBUST / CONTESTED / FRAGILE
 │   └── reasoning_generator.py  # Template-based, fact-grounded reasoning strings
 │
-├── api/
-│   └── routes/                 # FastAPI sandbox (optional — rank.py is primary)
-│
 ├── scripts/
-│   ├── benchmark_runtime.py    # Measures wall-clock per stage
-│   ├── inspect_candidates.py   # Profile inspection utility
 │   └── validate_output.py      # Local submission validator
 │
 ├── tests/
-│   ├── test_e2e.py
-│   ├── test_honeypot.py
-│   ├── test_reasoning.py
+│   ├── conftest.py
 │   ├── test_retrieval.py
 │   └── test_scoring.py
 │
 └── data/
     ├── candidates.jsonl          # Full 100K candidate pool
-    ├── sample_candidates.json    # Small sample for local testing
     └── indexes/                  # Built by precompute.py
         ├── faiss.index
         ├── bm25.pkl
@@ -216,6 +208,7 @@ python precompute_llm_addition.py
 ```
 Models are cached in `~/.cache/huggingface/` after first download. During ranking (no-network window), they load from cache.
 
+
 ### 3. Place your data
 
 ```bash
@@ -224,6 +217,19 @@ cp /path/to/candidates.jsonl data/candidates.jsonl
 
 # Job description is already in the repo
 ls job_description.md
+```
+
+### 4. Mount the precomputed indeses from google drive or precompute them locally.
+
+Google-Drive Link : [https://drive.google.com/drive/folders/1TwEprdrDkvJUufSJXA8ZnPxSTYVYQUDd?usp=drive_link](https://drive.google.com/drive/folders/1TwEprdrDkvJUufSJXA8ZnPxSTYVYQUDd?usp=drive_link)
+Place them in the ```/data/indexes``` folder.
+
+OR
+
+Precompute them locally
+ 
+```bash
+python -m build_indexes
 ```
 
 ---
@@ -245,7 +251,7 @@ python rank.py \
   --top-k 100
 ```
 
-```
+
 
 Validating Output:
 
@@ -354,6 +360,7 @@ blended = 0.70 × weighted_sum + 0.30 × cross_encoder_score
 | `profile_completeness_score` | 0.10 |
 | `interview_completion_rate` | 0.05 |
 
+### Trajectory Score (`weight: 0.10`)
 ---
 
 ## Honeypot Detection
@@ -435,13 +442,13 @@ ONTOLOGY_PATH_TOP_K   = 280
 TRAJECTORY_PATH_TOP_K = 220
 SIGNAL_PATH_TOP_K     = 200 
 RRF_POOL_SIZE         = 800
-CROSS_ENCODER_TOP_K   = 400
+CROSS_ENCODER_TOP_K   = 300
 
 # Scoring weights (must sum to 1.0)
 WEIGHT_SKILL          = 0.40
 WEIGHT_CAREER         = 0.30
 WEIGHT_BEHAVIORAL     = 0.20
-WEIGHT_TRAJECTORY     = 0.20
+WEIGHT_TRAJECTORY     = 0.10
 
 # Cross-encoder blend
 CE_BLEND_FACTOR       = 0.30
@@ -521,33 +528,6 @@ LLM Reranker  (top-300)       ~75s   ← new stage
 Composite Scorer
 ```
 
-### Composite blend with LLM
-
-```python
-# scoring/composite.py
-final_score = (
-    0.60 * weighted_sum          # 0.40×skill + 0.35×career + 0.25×behavioral
-  + 0.25 * cross_encoder_score   # CE_BLEND_FACTOR (was 0.30, reduced to make room)
-  + 0.15 * llm_score             # LLM_BLEND_FACTOR
-)
-```
-
-### Setup (one-time, during pre-computation)
-
-```bash
-# Downloads ~1 GB GGUF model into models/
-python precompute.py --candidates data/candidates.jsonl.gz
-```
-
-The model is saved to `models/qwen2.5-1.5b-instruct-q4_k_m.gguf` and loaded from disk during ranking (no network required).
-
-### Smoke test before full pipeline run
-
-```bash
-python test_llm_reranker.py
-```
-
-Expected: strong AI/ML candidate at a product company scores ~0.7–0.9, consulting-only Java developer scores ~0.1–0.3. Speed: ~200–400ms per candidate on 8 CPU cores.
 
 ### Key files
 
@@ -565,7 +545,7 @@ All LLM parameters live in `config.py`:
 
 ```python
 LLM_MODEL_PATH       = "models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
-LLM_TOP_N            = 300     # candidates to score
+LLM_TOP_N            = 50     # candidates to score
 LLM_N_THREADS        = 8       # match your CPU core count
 LLM_N_CTX            = 512     # keep small — prompts are ~150 tokens
 LLM_BLEND_FACTOR     = 0.15    # weight in composite
